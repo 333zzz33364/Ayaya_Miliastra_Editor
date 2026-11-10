@@ -56,6 +56,13 @@ class GiaAssetBundleGraphExportHints:
     listen_signal_name_port_index_by_signal_name: Dict[str, int] | None = None
     listen_param_port_indices_by_signal_name: Dict[str, List[int]] | None = None
 
+    # 可选：发送客户端脚本信号（300005）映射（自包含 bundle 提供）。
+    # 该节点的“信号名”是普通字符串入参，不使用 META pin；实例 runtime_id 指向专属 node_def_id。
+    client_send_node_def_id_by_signal_name: Dict[str, int] | None = None
+    client_send_target_player_port_index_by_signal_name: Dict[str, int] | None = None
+    client_send_signal_name_port_index_by_signal_name: Dict[str, int] | None = None
+    client_send_param_port_indices_by_signal_name: Dict[str, List[int]] | None = None
+
     # 可选：将“信号 node_def GraphUnits”等 dependencies 一并打包进输出 `.gia`（AssetBundle.field_2）。
     # 用于导入到空存档时仍能自动展开信号端口（自包含）。
     extra_dependency_graph_units: List[Dict[str, Any]] | None = None

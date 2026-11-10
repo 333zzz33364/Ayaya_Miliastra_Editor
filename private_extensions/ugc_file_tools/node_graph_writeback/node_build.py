@@ -35,6 +35,23 @@ from .record_codec import (
 from .template_library import _NodeTemplate
 
 
+def _build_node_comment_message(node_payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    GraphModel 的节点注释 → GIL 节点 field 7（Comment 消息）。
+
+    行内注释优先跟随节点创建行；块注释用于说明节点所在流程。
+    两者同时存在时各占一行，保持源码中的阅读顺序。
+    """
+    parts = [
+        str(node_payload.get(key) or "").strip()
+        for key in ("custom_comment", "inline_comment")
+    ]
+    text = "\n".join(part for part in parts if part != "")
+    if text == "":
+        return None
+    return {"1": text}
+
+
 def _build_nodes_list_from_templates(
     *,
     sorted_nodes: List[_SortedNode],
@@ -93,6 +110,9 @@ def _build_nodes_list_from_templates(
             node_prop_text = _build_server_node_property_binary_text(node_id_int=int(type_id_int))
 
             records_list: List[str] = []
+
+            # 客户端脚本发送节点也沿用这里的空 records 初值，不额外预置流程口；
+            # 其流程声明由 node_def 提供，实际出口交给 flow 写回，避免同槽重复。
 
             # ===== 动态端口节点：拼装列表 =====
             # 对齐校准样本：
@@ -219,6 +239,9 @@ def _build_nodes_list_from_templates(
                 synthesized_node["5"] = float(x)
             if float(y) != 0.0:
                 synthesized_node["6"] = float(y)
+            comment_message = _build_node_comment_message(node_payload)
+            if comment_message is not None:
+                synthesized_node["7"] = comment_message
             # 对齐真源与用户修复样本：signal listen 事件节点（title=信号名）不写 concrete_id。
             if _is_signal_listen_event_node_payload(node_payload):
                 synthesized_node.pop("3", None)
@@ -250,6 +273,12 @@ def _build_nodes_list_from_templates(
             new_node["6"] = float(y)
         else:
             new_node.pop("6", None)
+
+        comment_message = _build_node_comment_message(node_payload)
+        if comment_message is not None:
+            new_node["7"] = comment_message
+        else:
+            new_node.pop("7", None)
 
         strip_id_set = template_bundle.template_node_id_set if isinstance(template_bundle, _NodeTemplate) else set()
         _strip_all_link_records_from_node(node=new_node, template_node_id_set=set(strip_id_set))

@@ -16,6 +16,7 @@ _SIGNAL_ID_META_KEY: str = "__signal_id"
 _SEND_SIGNAL_TITLE: str = "发送信号"
 _LISTEN_SIGNAL_TITLE: str = "监听信号"
 _SEND_TO_SERVER_SIGNAL_TITLE: str = "向服务器节点图发送信号"
+_CLIENT_SEND_SIGNAL_TITLE: str = "发送客户端脚本信号"
 
 
 def _extract_struct_id_from_graph_node_payload(node_payload: Dict[str, Any]) -> Optional[int]:
@@ -39,6 +40,7 @@ def _resolve_signal_specific_type_id_from_graph_node_payload(
     signal_send_node_def_id_by_signal_name: Optional[Dict[str, int]],
     signal_listen_node_def_id_by_signal_name: Optional[Dict[str, int]],
     signal_server_node_def_id_by_signal_name: Optional[Dict[str, int]],
+    signal_client_send_node_def_id_by_signal_name: Optional[Dict[str, int]] = None,
 ) -> Optional[int]:
     """
     当信号节点使用静态 META 绑定（存在 __signal_id + 常量“信号名”）时，
@@ -69,6 +71,18 @@ def _resolve_signal_specific_type_id_from_graph_node_payload(
                     v = signal_listen_node_def_id_by_signal_name.get(str(signal_name))
                     if isinstance(v, int) and int(v) > 0:
                         return int(v)
+
+    if str(node_title) == _CLIENT_SEND_SIGNAL_TITLE:
+        input_constants = node_payload.get("input_constants")
+        if not isinstance(input_constants, dict):
+            return None
+        signal_name_raw = input_constants.get(_SIGNAL_NAME_PORT)
+        signal_name = str(signal_name_raw).strip() if isinstance(signal_name_raw, str) else ""
+        if signal_name != "" and isinstance(signal_client_send_node_def_id_by_signal_name, dict):
+            v = signal_client_send_node_def_id_by_signal_name.get(str(signal_name))
+            if isinstance(v, int) and int(v) > 0:
+                return int(v)
+        return None
 
     if str(node_title) not in {_SEND_SIGNAL_TITLE, _LISTEN_SIGNAL_TITLE, _SEND_TO_SERVER_SIGNAL_TITLE}:
         return None
@@ -106,6 +120,7 @@ def _build_graph_node_id_maps(
     signal_send_node_def_id_by_signal_name: Optional[Dict[str, int]] = None,
     signal_listen_node_def_id_by_signal_name: Optional[Dict[str, int]] = None,
     signal_server_node_def_id_by_signal_name: Optional[Dict[str, int]] = None,
+    signal_client_send_node_def_id_by_signal_name: Optional[Dict[str, int]] = None,
     prefer_signal_specific_type_id: bool = False,
 ) -> Tuple[Dict[str, int], Dict[str, int], Dict[str, str], Dict[str, Dict[str, Any]]]:
     node_id_int_by_graph_node_id: Dict[str, int] = {}
@@ -172,6 +187,7 @@ def _build_graph_node_id_maps(
                 signal_send_node_def_id_by_signal_name=signal_send_node_def_id_by_signal_name,
                 signal_listen_node_def_id_by_signal_name=signal_listen_node_def_id_by_signal_name,
                 signal_server_node_def_id_by_signal_name=signal_server_node_def_id_by_signal_name,
+                signal_client_send_node_def_id_by_signal_name=signal_client_send_node_def_id_by_signal_name,
             )
             if isinstance(signal_type_id, int) and int(signal_type_id) > 0:
                 # signal-specific type_id（常见 0x4000xxxx/0x4080xxxx）不要求模板库覆盖：

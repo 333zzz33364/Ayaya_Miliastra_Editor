@@ -101,6 +101,9 @@ def write_edges_inplace(
     signal_send_param_port_indices_by_signal_name: Optional[Dict[str, List[int]]] = None,
     signal_listen_param_port_indices_by_signal_name: Optional[Dict[str, List[int]]] = None,
     signal_server_send_param_port_indices_by_signal_name: Optional[Dict[str, List[int]]] = None,
+    signal_client_send_signal_name_port_index_by_signal_name: Optional[Dict[str, int]] = None,
+    signal_client_send_param_port_indices_by_signal_name: Optional[Dict[str, List[int]]] = None,
+    signal_client_send_target_player_port_index_by_signal_name: Optional[Dict[str, int]] = None,
     signal_param_var_type_ids_by_signal_name: Optional[Dict[str, List[int]]] = None,
 ) -> Dict[str, int]:
     if is_writeback_feature_enabled("prune_data_edges_like_after_game__data_type_conversion_to_dict_set_value"):
@@ -135,6 +138,7 @@ def write_edges_inplace(
         signal_send_signal_name_port_index_by_signal_name=signal_send_signal_name_port_index_by_signal_name,
         signal_listen_signal_name_port_index_by_signal_name=signal_listen_signal_name_port_index_by_signal_name,
         signal_server_send_signal_name_port_index_by_signal_name=signal_server_send_signal_name_port_index_by_signal_name,
+        signal_client_send_signal_name_port_index_by_signal_name=signal_client_send_signal_name_port_index_by_signal_name,
     )
     added_data_edges = write_data_edges_inplace(
         data_edges=data_edges,
@@ -153,6 +157,9 @@ def write_edges_inplace(
         signal_send_param_port_indices_by_signal_name=signal_send_param_port_indices_by_signal_name,
         signal_listen_param_port_indices_by_signal_name=signal_listen_param_port_indices_by_signal_name,
         signal_server_send_param_port_indices_by_signal_name=signal_server_send_param_port_indices_by_signal_name,
+        signal_client_send_signal_name_port_index_by_signal_name=signal_client_send_signal_name_port_index_by_signal_name,
+        signal_client_send_param_port_indices_by_signal_name=signal_client_send_param_port_indices_by_signal_name,
+        signal_client_send_target_player_port_index_by_signal_name=signal_client_send_target_player_port_index_by_signal_name,
         signal_param_var_type_ids_by_signal_name=signal_param_var_type_ids_by_signal_name,
     )
 

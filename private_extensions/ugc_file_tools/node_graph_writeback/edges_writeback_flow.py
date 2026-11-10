@@ -23,6 +23,7 @@ def write_flow_edges_inplace(
     signal_send_signal_name_port_index_by_signal_name: Optional[Dict[str, int]] = None,
     signal_listen_signal_name_port_index_by_signal_name: Optional[Dict[str, int]] = None,
     signal_server_send_signal_name_port_index_by_signal_name: Optional[Dict[str, int]] = None,
+    signal_client_send_signal_name_port_index_by_signal_name: Optional[Dict[str, int]] = None,
 ) -> int:
     added_flow_edges = 0
     for src_node_id, src_port, dst_node_id, dst_port in list(flow_edges):
@@ -144,6 +145,10 @@ def write_flow_edges_inplace(
                     src_signal_name_port_index = int(v)
             elif str(src_title) == "监听信号" and isinstance(signal_listen_signal_name_port_index_by_signal_name, dict):
                 v = signal_listen_signal_name_port_index_by_signal_name.get(str(src_signal_name))
+                if isinstance(v, int):
+                    src_signal_name_port_index = int(v)
+            elif str(src_title) == "发送客户端脚本信号" and isinstance(signal_client_send_signal_name_port_index_by_signal_name, dict):
+                v = signal_client_send_signal_name_port_index_by_signal_name.get(str(src_signal_name))
                 if isinstance(v, int):
                     src_signal_name_port_index = int(v)
             elif str(src_title) in {"发送信号到服务端", "向服务器节点图发送信号"} and isinstance(

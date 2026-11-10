@@ -22,8 +22,10 @@ from ugc_file_tools.node_graph_semantics.nep_type_expr import (
 )
 from ugc_file_tools.node_graph_semantics.signal_binding import (
     SIGNAL_NAME_PORT,
+    build_client_send_signal_binding_plan,
     build_listen_signal_binding_plan,
     build_send_signal_binding_plan,
+    is_client_send_signal_node_type,
     is_listen_signal_node_type,
     is_send_signal_node_type,
 )
@@ -144,6 +146,7 @@ def build_node_instances(
 
         is_send_signal_node = bool(is_send_signal_node_type(int(node_type_id_int)))
         is_listen_signal_node = bool(is_listen_signal_node_type(int(node_type_id_int)))
+        is_client_send_signal_node = bool(is_client_send_signal_node_type(int(node_type_id_int)))
 
         node_kind_int = 22001 if is_composite else int(consts["NodeKind"])
 
@@ -264,18 +267,40 @@ def build_node_instances(
             node_index_int=int(node_index_int),
         )
 
+        client_send_signal_plan = build_client_send_signal_binding_plan(
+            graph_node_id=str(graph_node_id),
+            node_type_id_int=int(node_type_id_int),
+            input_constants=input_constants,
+            client_send_node_def_id_by_signal_name=hints.client_send_node_def_id_by_signal_name,
+            client_send_target_player_port_index_by_signal_name=hints.client_send_target_player_port_index_by_signal_name,
+            client_send_signal_name_port_index_by_signal_name=hints.client_send_signal_name_port_index_by_signal_name,
+            client_send_param_port_indices_by_signal_name=hints.client_send_param_port_indices_by_signal_name,
+            node_index_int=int(node_index_int),
+        )
+
         send_signal_use_meta_binding = bool(send_signal_plan.use_meta_binding) and bool(is_send_signal_node)
         listen_signal_use_meta_binding = bool(listen_signal_plan.use_meta_binding) and bool(is_listen_signal_node)
 
-        resolved_signal_name: str | None = send_signal_plan.signal_name if bool(is_send_signal_node) else listen_signal_plan.signal_name
+        resolved_signal_name: str | None = (
+            send_signal_plan.signal_name if bool(is_send_signal_node)
+            else listen_signal_plan.signal_name if bool(is_listen_signal_node)
+            else client_send_signal_plan.signal_name if bool(is_client_send_signal_node)
+            else None
+        )
         send_node_def_id_int: int | None = send_signal_plan.send_node_def_id_int
         listen_node_def_id_int: int | None = listen_signal_plan.listen_node_def_id_int
+        client_send_node_def_id_int: int | None = client_send_signal_plan.client_send_node_def_id_int
 
         data_inputs_no_flow = [str(p) for p in input_ports if (not _is_flow_port_by_node_def(node_def=node_def, port_name=str(p), is_input=True))]
         if bool(is_send_signal_node):
             data_inputs = send_signal_plan.data_inputs_without_flow(input_ports=list(data_inputs_no_flow))
         elif bool(is_listen_signal_node):
             data_inputs = [p for p in list(data_inputs_no_flow) if (not bool(listen_signal_use_meta_binding) or str(p).strip() != SIGNAL_NAME_PORT)]
+        elif bool(is_client_send_signal_node):
+            # 真源引脚顺序：目标玩家 → 信号参数… → 信号名。
+            # 信号名是真源 Kind=5 的特殊输入 pin（输入框），单独在参数 pin 之后追加，
+            # 不参与普通 IN_PARAM 循环。
+            data_inputs = [p for p in list(data_inputs_no_flow) if str(p).strip() != SIGNAL_NAME_PORT]
         else:
             data_inputs = list(data_inputs_no_flow)
 
@@ -763,6 +788,15 @@ def build_node_instances(
             if bool(is_send_signal_node):
                 pin_msg["7"] = int(send_signal_plan.param_composite_pin_index(param_index=int(slot_index), fallback_index=int(pin_shell_index)))
 
+            if bool(is_client_send_signal_node):
+                port_name_text = str(raw_port_key).strip()
+                client_param_index = 0 if port_name_text in ("目标玩家", SIGNAL_NAME_PORT) else int(slot_index) - 1
+                pin_msg["7"] = int(client_send_signal_plan.composite_index_for_port(
+                    port_name=port_name_text,
+                    param_index=int(client_param_index),
+                    fallback_index=int(pin_shell_index),
+                ))
+
             conns = data_conns_by_dst_pin.get((int(node_index_int), int(pin_shell_index))) or []
             if conns:
                 pin_msg["5"] = list(conns)
@@ -793,6 +827,19 @@ def build_node_instances(
             }
             listen_meta_pin["7"] = int(composite_pin_index)
             pins.append(listen_meta_pin)
+
+        if bool(is_client_send_signal_node) and resolved_signal_name is not None:
+            # 真源样本：信号名是 Kind=5 的特殊输入 pin（无 source_ref），
+            # 位置在参数 pin 之后，并带 client_exec_node={kind:6,index:1}。
+            client_signal_name_pin: Dict[str, Any] = {
+                "1": _make_pin_sig(kind_int=5, index_int=0),
+                "2": _make_pin_sig(kind_int=5, index_int=0),
+                "3": build_var_base_message_server(var_type_int=6, value=str(resolved_signal_name)),
+                "6": _make_pin_sig(kind_int=6, index_int=1),
+            }
+            if isinstance(client_send_signal_plan.signal_name_port_index, int):
+                client_signal_name_pin["7"] = int(client_send_signal_plan.signal_name_port_index)
+            pins.append(client_signal_name_pin)
 
         data_outputs = [str(p) for p in output_ports if not _is_flow_port_by_node_def(node_def=node_def, port_name=str(p), is_input=False)]
         for out_index, port_name in enumerate(data_outputs):
@@ -1033,6 +1080,38 @@ def build_node_instances(
                     }
                 )
 
+        # Set_Custom_Variable(type_id=22) 在真源/编辑器里有两个布尔入参（pin 3/4），
+        # Graph_Generater 只暴露一个“是否触发事件”。只写 pin 3 时编辑器会把可见的
+        # “是否触发事件”显示为否，客户端也收不到变量变化事件；这里按真源镜像 pin 4。
+        if int(node_type_id_int) == 22:
+            existing_param_indices: set[int] = set()
+            for pin_msg_existing in pins:
+                if not isinstance(pin_msg_existing, Mapping):
+                    continue
+                existing_sig = pin_msg_existing.get("1")
+                if isinstance(existing_sig, Mapping) and int(existing_sig.get("1") or 0) == 3:
+                    existing_param_indices.add(int(existing_sig.get("2") or 0))
+            if 3 in existing_param_indices and 4 not in existing_param_indices:
+                for pin_msg_existing in list(pins):
+                    if not isinstance(pin_msg_existing, Mapping):
+                        continue
+                    existing_sig = pin_msg_existing.get("1")
+                    if (
+                        not isinstance(existing_sig, Mapping)
+                        or int(existing_sig.get("1") or 0) != 3
+                        or int(existing_sig.get("2") or 0) != 3
+                    ):
+                        continue
+                    extra_bool_pin: Dict[str, Any] = {
+                        "1": _make_pin_sig(kind_int=3, index_int=4),
+                        "2": _make_pin_sig(kind_int=3, index_int=4),
+                        "4": int(pin_msg_existing.get("4") or 4),
+                    }
+                    if isinstance(pin_msg_existing.get("3"), Mapping):
+                        extra_bool_pin["3"] = dict(pin_msg_existing["3"])
+                    pins.append(extra_bool_pin)
+                    break
+
         pins.sort(key=_pin_sort_key)
 
         effective_runtime_id = int(node_type_id_int)
@@ -1045,11 +1124,19 @@ def build_node_instances(
             effective_runtime_id = int(listen_node_def_id_int)
             node_kind_int = 22001
 
+        # 发送客户端脚本信号（300005）：真源样本的实例 runtime_id 指向该信号专属 node_def（0x6000xxxx），
+        # 而不是 builtin 300005；kind 固定为 22001（自包含 NodeDef）。
+        if bool(is_client_send_signal_node) and isinstance(client_send_node_def_id_int, int) and int(client_send_node_def_id_int) > 0:
+            effective_runtime_id = int(client_send_node_def_id_int)
+            node_kind_int = 22001
+
         # 真源对齐（golden snapshot）：
-        # 当节点已被“信号规格/基底存档”提升为 signal-specific runtime_id（0x4000xxxx/0x4080xxxx）时，
+        # 当节点已被“信号规格/基底存档”提升为 signal-specific runtime_id（0x4000xxxx/0x4080xxxx/0x6000xxxx）时，
         # 该节点在 `.gia` 中属于“自包含 NodeDef(kind=22001)”，而不是普通 builtin Node(kind=22000)。
         # 否则编辑器/工具链可能按 builtin 端口表解释，出现端口索引错位与快照漂移。
         if 0x40000000 <= int(effective_runtime_id) < 0x50000000:
+            node_kind_int = 22001
+        if 0x60000000 <= int(effective_runtime_id) < 0x70000000:
             node_kind_int = 22001
 
         # Get_Local_Variable：补齐 NodeInstance.concrete_id（field_3）

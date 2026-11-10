@@ -19,6 +19,7 @@ from ugc_file_tools.node_graph_semantics.signal_binding import (
     build_server_send_signal_binding_plan as _build_server_send_signal_binding_plan,
     build_listen_signal_binding_plan as _build_listen_signal_binding_plan,
     build_send_signal_binding_plan as _build_send_signal_binding_plan,
+    build_client_send_signal_binding_plan as _build_client_send_signal_binding_plan,
     is_listen_signal_node_type as _is_listen_signal_node_type,
     is_send_signal_node_type as _is_send_signal_node_type,
     is_server_send_signal_node_type as _is_server_send_signal_node_type,
@@ -199,12 +200,17 @@ def prepare_node_state_for_constants_writeback(
     signal_listen_param_port_indices_by_signal_name: Optional[Dict[str, List[int]]] = None,
     signal_server_send_signal_name_port_index_by_signal_name: Optional[Dict[str, int]] = None,
     signal_server_send_param_port_indices_by_signal_name: Optional[Dict[str, List[int]]] = None,
+    signal_client_send_node_def_id_by_signal_name: Optional[Dict[str, int]] = None,
+    signal_client_send_signal_name_port_index_by_signal_name: Optional[Dict[str, int]] = None,
+    signal_client_send_param_port_indices_by_signal_name: Optional[Dict[str, List[int]]] = None,
+    signal_client_send_target_player_port_index_by_signal_name: Optional[Dict[str, int]] = None,
     signal_send_node_def_id_by_signal_name: Optional[Dict[str, int]] = None,
     signal_listen_node_def_id_by_signal_name: Optional[Dict[str, int]] = None,
     signal_server_send_node_def_id_by_signal_name: Optional[Dict[str, int]] = None,
     signal_param_var_type_ids_by_signal_name: Optional[Dict[str, List[int]]] = None,
     # base `.gil` 提取：signal_name -> signal_index_int（signal_entry.field_6）
     signal_index_by_signal_name: Optional[Dict[str, int]] = None,
+    signal_client_send_signal_index_by_signal_name: Optional[Dict[str, int]] = None,
 ) -> _ConstantsWritebackNodeState | None:
     (_y, _x, title, node_id, node_payload) = node_item
     node_def = node_defs_by_name.get(str(title))
@@ -423,6 +429,35 @@ def prepare_node_state_for_constants_writeback(
                 signal_binding_param_var_type_ids = (
                     list(server_plan.param_var_type_ids) if isinstance(server_plan.param_var_type_ids, list) else None
                 )
+        elif title_text == "发送客户端脚本信号":
+            client_plan = _build_client_send_signal_binding_plan(
+                graph_node_id=str(node_id),
+                node_type_id_int=300005,
+                input_constants=input_constants,
+                client_send_node_def_id_by_signal_name=signal_client_send_node_def_id_by_signal_name,
+                client_send_target_player_port_index_by_signal_name=signal_client_send_target_player_port_index_by_signal_name,
+                client_send_signal_name_port_index_by_signal_name=signal_client_send_signal_name_port_index_by_signal_name,
+                client_send_param_port_indices_by_signal_name=signal_client_send_param_port_indices_by_signal_name,
+                node_index_int=int(node_id_int),
+            )
+            if bool(client_plan.active):
+                signal_binding_role = "client_send"
+                signal_binding_name = str(client_plan.signal_name or "")
+                signal_binding_signal_index_int = (signal_client_send_signal_index_by_signal_name or {}).get(signal_binding_name)
+                if not isinstance(signal_binding_signal_index_int, int):
+                    raise ValueError(f"客户端信号定义缺少独立索引：{signal_binding_name}")
+                signal_binding_source_ref_node_def_id_int = int(client_plan.client_send_node_def_id_int)
+                signal_binding_signal_name_port_index = (
+                    int(client_plan.signal_name_port_index)
+                    if isinstance(client_plan.signal_name_port_index, int)
+                    else None
+                )
+                composite_ports: List[int] = []
+                if isinstance(client_plan.target_player_port_index, int):
+                    composite_ports.append(int(client_plan.target_player_port_index))
+                if isinstance(client_plan.param_port_indices, list):
+                    composite_ports.extend(int(x) for x in client_plan.param_port_indices if isinstance(x, int))
+                signal_binding_param_port_indices = list(composite_ports)
 
     # 信号节点（发送/监听/向服务器发送）：当“信号名”无入边且满足 META binding 时，
     # 按真实写法将其视为 META 绑定端口，不占用 data 端口索引位，避免参数 pin 整体错位。

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from ugc_file_tools.gil_dump_codec.protobuf_like_bridge import binary_data_text_to_decoded_field_map
+from ugc_file_tools.gil_dump_codec.protobuf_like_bridge import binary_data_text_to_numeric_message
 from ugc_file_tools.gil_dump_codec.protobuf_like import parse_binary_data_hex_text
 
 
@@ -150,6 +151,12 @@ class _SignalWritebackMaps:
     signal_index_by_signal_name: Dict[str, int]
     # signal_name -> [param_var_type_id]（按信号定义参数顺序；用于写回侧覆写发送信号参数端口的 VarType）
     param_var_type_ids_by_signal_name: Dict[str, List[int]]
+    # 发送客户端脚本信号（300005）：signal_name -> 该信号专属 node_def_id / 端口索引
+    client_send_node_def_id_by_signal_name: Dict[str, int]
+    client_send_signal_name_port_index_by_signal_name: Dict[str, int]
+    client_send_target_player_port_index_by_signal_name: Dict[str, int]
+    client_send_param_port_indices_by_signal_name: Dict[str, List[int]]
+    client_send_signal_index_by_signal_name: Dict[str, int]
 
 
 def _build_empty_signal_writeback_maps() -> _SignalWritebackMaps:
@@ -165,6 +172,11 @@ def _build_empty_signal_writeback_maps() -> _SignalWritebackMaps:
         server_send_param_port_indices_by_signal_name={},
         signal_index_by_signal_name={},
         param_var_type_ids_by_signal_name={},
+        client_send_node_def_id_by_signal_name={},
+        client_send_signal_name_port_index_by_signal_name={},
+        client_send_target_player_port_index_by_signal_name={},
+        client_send_param_port_indices_by_signal_name={},
+        client_send_signal_index_by_signal_name={},
     )
 
 
@@ -191,6 +203,11 @@ def _extract_signal_node_def_id_maps_from_payload_root(
     server_send_param_port_indices_by_signal_name: Dict[str, List[int]] = {}
     signal_index_by_signal_name: Dict[str, int] = {}
     param_var_type_ids_by_signal_name: Dict[str, List[int]] = {}
+    client_send_node_def_id_by_signal_name: Dict[str, int] = {}
+    client_send_signal_name_port_index_by_signal_name: Dict[str, int] = {}
+    client_send_target_player_port_index_by_signal_name: Dict[str, int] = {}
+    client_send_param_port_indices_by_signal_name: Dict[str, List[int]] = {}
+    client_send_signal_index_by_signal_name: Dict[str, int] = {}
 
     section10 = payload_root.get("10")
     if not isinstance(section10, dict):
@@ -206,19 +223,105 @@ def _extract_signal_node_def_id_maps_from_payload_root(
         node_def_wrappers = [x for x in node_def_wrappers_raw if isinstance(x, dict)]
     elif isinstance(node_def_wrappers_raw, dict):
         node_def_wrappers = [node_def_wrappers_raw]
-    for wrapper in node_def_wrappers:
+
+    # 浅层 dump 下 node_def['4']['1'] 可能是 <binary_data>；section5/2 的 meta 索引与 wrappers
+    # 一一对应时优先按位置取 node_def_id。
+    meta_list_raw = section5.get("2")
+    node_def_meta_list: List[Any] = []
+    if isinstance(meta_list_raw, list):
+        node_def_meta_list = list(meta_list_raw)
+    elif isinstance(meta_list_raw, (dict, str)):
+        node_def_meta_list = [meta_list_raw]
+
+    # 同名客户端定义可能有多个；已注册 entry9 的 ID 才是图写回应使用的
+    # 定义，不能由 node_defs 的排列顺序决定端口和独立索引。
+    registered_clients: Dict[str, int] = {}
+    raw_entries = section5.get("3")
+    for raw_entry in (raw_entries if isinstance(raw_entries, list) else [raw_entries]):
+        entry_value = binary_data_text_to_numeric_message(raw_entry) if isinstance(raw_entry, str) and raw_entry.startswith("<binary_data>") else raw_entry
+        if not isinstance(entry_value, dict):
+            continue
+        name = _extract_utf8_text_from_maybe_binary_data(entry_value.get("3"))
+        client_id = _extract_signal_node_def_id_from_signal_meta(entry_value.get("9"))
+        if name and isinstance(client_id, int):
+            registered_clients[name] = client_id
+
+    for wrapper_index, wrapper in enumerate(node_def_wrappers):
         node_def_obj = wrapper.get("1")
         if not isinstance(node_def_obj, dict):
             continue
-        meta_outer = node_def_obj.get("4")
-        if not isinstance(meta_outer, dict):
-            continue
-        meta_inner = meta_outer.get("1")
-        if not isinstance(meta_inner, dict):
-            continue
-        node_def_id = _extract_int_from_maybe_int_node(meta_inner.get("5"))
+        node_def_id: Optional[int] = None
+        if len(node_def_meta_list) == len(node_def_wrappers) and wrapper_index < len(node_def_meta_list):
+            meta_item = node_def_meta_list[wrapper_index]
+            if isinstance(meta_item, dict):
+                node_def_id = _extract_int_from_maybe_int_node(meta_item.get("5"))
+                if node_def_id is None:
+                    node_def_id = _extract_int_from_maybe_int_node(meta_item.get("field_5"))
+        if node_def_id is None:
+            meta_outer = node_def_obj.get("4")
+            meta_inner = meta_outer.get("1") if isinstance(meta_outer, dict) else None
+            if isinstance(meta_inner, str) and meta_inner.startswith("<binary_data>"):
+                decoded_inner = binary_data_text_to_numeric_message(meta_inner)
+                if isinstance(decoded_inner, dict):
+                    meta_inner = decoded_inner
+            if isinstance(meta_inner, dict):
+                node_def_id = _extract_int_from_maybe_int_node(meta_inner.get("5"))
         if isinstance(node_def_id, int) and int(node_def_id) > 0 and int(node_def_id) not in node_def_by_id:
             node_def_by_id[int(node_def_id)] = node_def_obj
+
+        if str(node_def_obj.get("200") or "").strip() == "发送客户端脚本信号":
+            sig_node = node_def_obj.get("107")
+            sig_binding = sig_node.get("108") if isinstance(sig_node, dict) else None
+            if isinstance(sig_binding, str) and sig_binding.startswith("<binary_data>"):
+                decoded_binding = binary_data_text_to_numeric_message(sig_binding)
+                if isinstance(decoded_binding, dict):
+                    sig_binding = decoded_binding
+            sig_name_raw = sig_binding.get("1") if isinstance(sig_binding, dict) else None
+            sig_name = str(_extract_utf8_text_from_maybe_binary_data(sig_name_raw)).strip()
+            if (sig_name != "" and isinstance(node_def_id, int) and int(node_def_id) > 0
+                    and registered_clients.get(sig_name, node_def_id) == node_def_id):
+                client_send_node_def_id_by_signal_name[str(sig_name)] = int(node_def_id)
+                # 客户端定义的独立索引不是 signal_entry.field6。存档5中前者
+                # 为6，而三类客户端信号对应的 entry index 为8/9/12。
+                meta = node_def_obj.get("4")
+                client_index = _extract_int_from_maybe_int_node(meta.get("5")) if isinstance(meta, dict) else None
+                if isinstance(client_index, int):
+                    client_send_signal_index_by_signal_name[str(sig_name)] = int(client_index)
+
+                port_obj = node_def_obj.get("106")
+                if isinstance(port_obj, dict):
+                    port_index = _extract_int_from_maybe_int_node(port_obj.get("8"))
+                    if isinstance(port_index, int) and int(port_index) >= 0:
+                        client_send_signal_name_port_index_by_signal_name[str(sig_name)] = int(port_index)
+
+                params_raw = node_def_obj.get("102")
+                param_items: List[Dict[str, Any]] = []
+                raw_items: List[Any] = []
+                if isinstance(params_raw, list):
+                    raw_items = list(params_raw)
+                elif isinstance(params_raw, (dict, str)):
+                    raw_items = [params_raw]
+                for raw_item in raw_items:
+                    if isinstance(raw_item, dict):
+                        param_items.append(raw_item)
+                    elif isinstance(raw_item, str) and raw_item.startswith("<binary_data>"):
+                        decoded_item = binary_data_text_to_numeric_message(raw_item)
+                        if isinstance(decoded_item, dict):
+                            param_items.append(decoded_item)
+                if param_items:
+                    target_port = _extract_int_from_maybe_int_node(param_items[0].get("8"))
+                    if target_port is None:
+                        target_port = _extract_int_from_maybe_int_node(param_items[0].get("field_8"))
+                    if isinstance(target_port, int) and int(target_port) >= 0:
+                        client_send_target_player_port_index_by_signal_name[str(sig_name)] = int(target_port)
+                    param_ports: List[int] = []
+                    for item in param_items[1:]:
+                        port_value = _extract_int_from_maybe_int_node(item.get("8"))
+                        if port_value is None:
+                            port_value = _extract_int_from_maybe_int_node(item.get("field_8"))
+                        if isinstance(port_value, int) and int(port_value) >= 0:
+                            param_ports.append(int(port_value))
+                    client_send_param_port_indices_by_signal_name[str(sig_name)] = list(param_ports)
 
     signal_entries_value = section5.get("3")
     # 兼容两种 dump 形态：
@@ -367,5 +470,10 @@ def _extract_signal_node_def_id_maps_from_payload_root(
         server_send_param_port_indices_by_signal_name=dict(server_send_param_port_indices_by_signal_name),
         signal_index_by_signal_name=dict(signal_index_by_signal_name),
         param_var_type_ids_by_signal_name=dict(param_var_type_ids_by_signal_name),
+        client_send_node_def_id_by_signal_name=dict(client_send_node_def_id_by_signal_name),
+        client_send_signal_name_port_index_by_signal_name=dict(client_send_signal_name_port_index_by_signal_name),
+        client_send_target_player_port_index_by_signal_name=dict(client_send_target_player_port_index_by_signal_name),
+        client_send_param_port_indices_by_signal_name=dict(client_send_param_port_indices_by_signal_name),
+        client_send_signal_index_by_signal_name=dict(client_send_signal_index_by_signal_name),
     )
 

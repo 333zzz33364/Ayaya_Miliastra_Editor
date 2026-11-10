@@ -3751,6 +3751,13 @@
     "confidence": "manual",
     "notes": "人工映射：internal_or_en=Modify_Structure, category=执行节点"
   },
+  "300005": {
+    "scope": "server",
+    "graph_generater_node_name": "发送客户端脚本信号",
+    "semantic_id": "signal.send_client",
+    "confidence": "manual",
+    "notes": "模板来自 图片资料等/功能gia/玩家掉线检测、重连检测、断网检测_classic.gia；实例 runtime_id 使用每个信号专属的 0x6000xxxx node_def。"
+  },
   "1610612739": {
     "confidence": "high",
     "graph_generater_node_name": "",

@@ -41,10 +41,16 @@ def apply_input_constants_and_outparam_types(
     signal_listen_param_port_indices_by_signal_name: Optional[Dict[str, List[int]]] = None,
     signal_server_send_signal_name_port_index_by_signal_name: Optional[Dict[str, int]] = None,
     signal_server_send_param_port_indices_by_signal_name: Optional[Dict[str, List[int]]] = None,
+    # 发送客户端脚本信号（300005）：signal_name -> 专属 node_def / 端口索引
+    signal_client_send_node_def_id_by_signal_name: Optional[Dict[str, int]] = None,
+    signal_client_send_signal_name_port_index_by_signal_name: Optional[Dict[str, int]] = None,
+    signal_client_send_param_port_indices_by_signal_name: Optional[Dict[str, List[int]]] = None,
+    signal_client_send_target_player_port_index_by_signal_name: Optional[Dict[str, int]] = None,
     # base `.gil` 提取：signal_name -> [param_var_type_id]（按信号规格参数顺序）
     signal_param_var_type_ids_by_signal_name: Optional[Dict[str, List[int]]] = None,
     # base `.gil` 提取：signal_name -> signal_index_int（signal_entry.field_6）
     signal_index_by_signal_name: Optional[Dict[str, int]] = None,
+    signal_client_send_signal_index_by_signal_name: Optional[Dict[str, int]] = None,
     graph_scope: str = "server",
     graph_variable_type_text_by_name: Optional[Dict[str, str]] = None,
 ) -> _ConstantsWritebackResult:
@@ -76,11 +82,16 @@ def apply_input_constants_and_outparam_types(
             signal_listen_param_port_indices_by_signal_name=signal_listen_param_port_indices_by_signal_name,
             signal_server_send_signal_name_port_index_by_signal_name=signal_server_send_signal_name_port_index_by_signal_name,
             signal_server_send_param_port_indices_by_signal_name=signal_server_send_param_port_indices_by_signal_name,
+            signal_client_send_node_def_id_by_signal_name=signal_client_send_node_def_id_by_signal_name,
+            signal_client_send_signal_name_port_index_by_signal_name=signal_client_send_signal_name_port_index_by_signal_name,
+            signal_client_send_param_port_indices_by_signal_name=signal_client_send_param_port_indices_by_signal_name,
+            signal_client_send_target_player_port_index_by_signal_name=signal_client_send_target_player_port_index_by_signal_name,
             signal_send_node_def_id_by_signal_name=signal_send_node_def_id_by_signal_name,
             signal_listen_node_def_id_by_signal_name=signal_listen_node_def_id_by_signal_name,
             signal_server_send_node_def_id_by_signal_name=signal_server_send_node_def_id_by_signal_name,
             signal_param_var_type_ids_by_signal_name=signal_param_var_type_ids_by_signal_name,
             signal_index_by_signal_name=signal_index_by_signal_name,
+            signal_client_send_signal_index_by_signal_name=signal_client_send_signal_index_by_signal_name,
         )
         if state is None:
             continue

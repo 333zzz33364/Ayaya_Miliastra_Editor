@@ -132,6 +132,9 @@ def write_data_edges_inplace(
     signal_send_param_port_indices_by_signal_name: Optional[Dict[str, List[int]]] = None,
     signal_listen_param_port_indices_by_signal_name: Optional[Dict[str, List[int]]] = None,
     signal_server_send_param_port_indices_by_signal_name: Optional[Dict[str, List[int]]] = None,
+    signal_client_send_signal_name_port_index_by_signal_name: Optional[Dict[str, int]] = None,
+    signal_client_send_param_port_indices_by_signal_name: Optional[Dict[str, List[int]]] = None,
+    signal_client_send_target_player_port_index_by_signal_name: Optional[Dict[str, int]] = None,
     signal_param_var_type_ids_by_signal_name: Optional[Dict[str, List[int]]] = None,
 ) -> int:
     added_data_edges = 0
@@ -145,6 +148,7 @@ def write_data_edges_inplace(
     send_signal_nodes_with_signal_name_in_edge: set[str] = set()
     listen_signal_nodes_with_signal_name_in_edge: set[str] = set()
     server_send_signal_nodes_with_signal_name_in_edge: set[str] = set()
+    client_send_signal_nodes_with_signal_name_in_edge: set[str] = set()
     for _src_node_id0, _src_port0, dst_node_id0, dst_port0 in list(data_edges):
         if str(dst_port0) != "信号名":
             continue
@@ -158,6 +162,8 @@ def write_data_edges_inplace(
             isinstance(dst_type_id0, int) and int(dst_type_id0) == 300002
         ):
             server_send_signal_nodes_with_signal_name_in_edge.add(str(dst_node_id0))
+        if dst_title0 == "发送客户端脚本信号" or (isinstance(dst_type_id0, int) and int(dst_type_id0) == 300005):
+            client_send_signal_nodes_with_signal_name_in_edge.add(str(dst_node_id0))
 
     for src_node_id, src_port, dst_node_id, dst_port in list(data_edges):
         src_node_id_int = node_id_int_by_graph_node_id.get(src_node_id)
@@ -189,6 +195,9 @@ def write_data_edges_inplace(
         is_listen_signal_node = bool(int(dst_type_id_int) == 300001 or str(dst_title) == "监听信号")
         is_server_send_signal_node = bool(
             int(dst_type_id_int) == 300002 or str(dst_title) in {"发送信号到服务端", "向服务器节点图发送信号"}
+        )
+        is_client_send_signal_node = bool(
+            int(dst_type_id_int) == 300005 or str(dst_title) == "发送客户端脚本信号"
         )
         signal_binding_param_port_indices: Optional[List[int]] = None
         signal_binding_param_var_type_ids: Optional[List[int]] = None
@@ -223,6 +232,19 @@ def write_data_edges_inplace(
                         raw = signal_server_send_param_port_indices_by_signal_name.get(str(signal_name))
                         if isinstance(raw, list):
                             signal_binding_param_port_indices = [int(x) for x in raw if isinstance(x, int)]
+                elif bool(is_client_send_signal_node) and str(dst_node_id) not in client_send_signal_nodes_with_signal_name_in_edge:
+                    dst_data_inputs = [p for p in dst_data_inputs if p != "信号名"]
+                    is_signal_meta_binding_node = True
+                    composite_ports: List[int] = []
+                    if isinstance(signal_client_send_target_player_port_index_by_signal_name, dict):
+                        target_port = signal_client_send_target_player_port_index_by_signal_name.get(str(signal_name))
+                        if isinstance(target_port, int) and int(target_port) >= 0:
+                            composite_ports.append(int(target_port))
+                    if isinstance(signal_client_send_param_port_indices_by_signal_name, dict):
+                        raw = signal_client_send_param_port_indices_by_signal_name.get(str(signal_name))
+                        if isinstance(raw, list):
+                            composite_ports.extend(int(x) for x in raw if isinstance(x, int))
+                    signal_binding_param_port_indices = list(composite_ports)
                 if bool(is_signal_meta_binding_node) and isinstance(signal_param_var_type_ids_by_signal_name, dict):
                     raw_vts = signal_param_var_type_ids_by_signal_name.get(str(signal_name))
                     if isinstance(raw_vts, list):

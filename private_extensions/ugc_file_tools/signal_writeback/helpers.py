@@ -256,15 +256,37 @@ def _extract_node_def_wrappers_from_payload_root(payload_root: Mapping[str, Any]
 def _index_node_defs_by_id(payload_root: Mapping[str, Any]) -> Dict[int, Dict[str, Any]]:
     mapping: Dict[int, Dict[str, Any]] = {}
 
-    # 优先：使用 `section10/5/2` 的 meta index 与 `section10/2` 的 wrappers 位置对齐来索引。
-    #
-    # 背景：
-    # - 信号写回为了避免误改 NodeGraph blob，会使用较浅的 dump 解码深度；
-    # - 在该深度下，node_def 内部 meta（`node_def['4']['1']`）可能无法完全展开，
-    #   从而导致“按 meta 路径提取 node_def_id”失败；
-    # - 但 `section10/5/2` 的 meta index 列表在 dump-json 中更稳定，且与 wrappers 数量一致，
-    #   因此可用它作为 node_def_id 的真源索引。
+    # 优先从每个 node_def 自身的 metadata 读 ID。部分真实存档的
+    # `section10/5/2` 与 `section10/2` 数量或顺序不同，不能按下标盲目配对。
     section10 = payload_root.get("10")
+    wrappers = _extract_node_def_wrappers_from_payload_root(payload_root)
+    for wrapper in wrappers:
+        inner = wrapper.get("1")
+        if not isinstance(inner, dict):
+            continue
+        meta_value = inner.get("4")
+        if isinstance(meta_value, str) and meta_value.startswith("<binary_data>"):
+            decoded_meta = binary_data_text_to_numeric_message(meta_value)
+            if isinstance(decoded_meta, Mapping):
+                meta_value = decoded_meta
+        if not isinstance(meta_value, Mapping):
+            continue
+        for meta_key in ("1", "2"):
+            node_meta = meta_value.get(meta_key)
+            if isinstance(node_meta, str) and node_meta.startswith("<binary_data>"):
+                decoded_node_meta = binary_data_text_to_numeric_message(node_meta)
+                if isinstance(decoded_node_meta, Mapping):
+                    node_meta = decoded_node_meta
+            if not isinstance(node_meta, Mapping):
+                continue
+            node_def_id = node_meta.get("5")
+            if not isinstance(node_def_id, int):
+                node_def_id = node_meta.get("field_5")
+            if isinstance(node_def_id, int):
+                mapping.setdefault(int(node_def_id), inner)
+                break
+
+    # 旧样本若 node_def 内部 metadata 缺失，且列表确实一一对应，再使用 section meta 作兜底。
     if isinstance(section10, Mapping):
         sec5 = section10.get("5")
         meta_list_value = sec5.get("2") if isinstance(sec5, Mapping) else None
@@ -274,7 +296,6 @@ def _index_node_defs_by_id(payload_root: Mapping[str, Any]) -> Dict[int, Dict[st
         elif isinstance(meta_list_value, Mapping):
             meta_list = [meta_list_value]
 
-        wrappers = _extract_node_def_wrappers_from_payload_root(payload_root)
         if meta_list and wrappers and len(meta_list) == len(wrappers):
             for i in range(len(wrappers)):
                 meta_item = meta_list[i]
@@ -288,18 +309,6 @@ def _index_node_defs_by_id(payload_root: Mapping[str, Any]) -> Dict[int, Dict[st
                 if not isinstance(node_def_id, int):
                     continue
                 mapping.setdefault(int(node_def_id), inner)
-            if mapping:
-                return mapping
-
-    # fallback：从 node_def 内部 meta 推断（要求 dump 解码足够深）
-    for wrapper in _extract_node_def_wrappers_from_payload_root(payload_root):
-        inner = wrapper.get("1")
-        if not isinstance(inner, dict):
-            continue
-        try_id = _extract_nested_int(inner, ["4", "1", "5"])
-        if not isinstance(try_id, int):
-            continue
-        mapping[int(try_id)] = inner
     return mapping
 
 
@@ -427,6 +436,22 @@ def _choose_base_signal_node_def_templates_from_template_payload(
     """
     node_defs_by_id = _index_node_defs_by_id(template_payload_root)
 
+    # 优先按 node_def 标题选模板：部分真源/基准存档的信号 entry 字段 1/2/7 顺序并不固定，
+    # 按字段位置取会把“监听信号”当成“发送信号”。标题是稳定口径。
+    by_title: Dict[str, Dict[str, Any]] = {}
+    for _node_def in node_defs_by_id.values():
+        if not isinstance(_node_def, dict):
+            continue
+        _title = str(_node_def.get("200") or "").strip()
+        if _title and _title not in by_title:
+            by_title[_title] = _node_def
+    if all(name in by_title for name in ("发送信号", "监听信号", "向服务器节点图发送信号")):
+        return (
+            copy.deepcopy(by_title["发送信号"]),
+            copy.deepcopy(by_title["监听信号"]),
+            copy.deepcopy(by_title["向服务器节点图发送信号"]),
+        )
+
     for entry in _extract_signal_entries_from_payload_root(template_payload_root):
         params = entry.get("4")
         params_is_empty = (params is None) or (isinstance(params, list) and len(params) == 0)
@@ -478,6 +503,22 @@ def _try_choose_base_signal_node_def_templates_from_template_payload(
     - 找不到可用样本时返回 None（用于“自动模板选择”场景）。
     """
     node_defs_by_id = _index_node_defs_by_id(template_payload_root)
+
+    # 优先按 node_def 标题选模板：部分真源/基准存档的信号 entry 字段 1/2/7 顺序并不固定，
+    # 按字段位置取会把“监听信号”当成“发送信号”。标题是稳定口径。
+    by_title: Dict[str, Dict[str, Any]] = {}
+    for _node_def in node_defs_by_id.values():
+        if not isinstance(_node_def, dict):
+            continue
+        _title = str(_node_def.get("200") or "").strip()
+        if _title and _title not in by_title:
+            by_title[_title] = _node_def
+    if all(name in by_title for name in ("发送信号", "监听信号", "向服务器节点图发送信号")):
+        return (
+            copy.deepcopy(by_title["发送信号"]),
+            copy.deepcopy(by_title["监听信号"]),
+            copy.deepcopy(by_title["向服务器节点图发送信号"]),
+        )
 
     for entry in _extract_signal_entries_from_payload_root(template_payload_root):
         params = entry.get("4")

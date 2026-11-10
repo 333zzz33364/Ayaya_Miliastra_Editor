@@ -7,6 +7,7 @@ from typing import Dict, List, Mapping, Sequence, Set, Tuple
 SEND_SIGNAL_NODE_TYPE_ID: int = 300000
 LISTEN_SIGNAL_NODE_TYPE_ID: int = 300001
 SERVER_SEND_SIGNAL_NODE_TYPE_ID: int = 300002
+CLIENT_SEND_SIGNAL_NODE_TYPE_ID: int = 300005
 SIGNAL_NAME_PORT: str = "信号名"
 
 
@@ -23,6 +24,13 @@ def is_server_send_signal_node_type(node_type_id_int: int) -> bool:
     向服务器节点图发送信号（Send_Signal_To_Server, type_id=300002）。
     """
     return int(node_type_id_int) == int(SERVER_SEND_SIGNAL_NODE_TYPE_ID)
+
+
+def is_client_send_signal_node_type(node_type_id_int: int) -> bool:
+    """
+    发送客户端脚本信号（Send_Client_Script_Signal, type_id=300005）。
+    """
+    return int(node_type_id_int) == int(CLIENT_SEND_SIGNAL_NODE_TYPE_ID)
 
 
 def should_use_send_signal_meta_binding(
@@ -504,5 +512,104 @@ def build_server_send_signal_binding_plan(
         signal_name_port_index=int(signal_name_port_index),
         param_port_indices=param_port_indices,
         param_var_type_ids=param_var_type_ids,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ClientSendSignalBindingPlan:
+    """
+    发送客户端脚本信号（300005）的导出计划。
+
+    与发送信号/监听信号不同：该节点的“信号名”是普通字符串入参，不使用 META pin。
+    节点实例的 runtime_id 使用该信号专属的 node_def_id（0x6000xxxx），kind=22001。
+    """
+
+    signal_name: str | None
+    client_send_node_def_id_int: int | None
+    target_player_port_index: int | None
+    signal_name_port_index: int | None
+    param_port_indices: List[int] | None
+
+    @property
+    def active(self) -> bool:
+        return (
+            isinstance(self.client_send_node_def_id_int, int)
+            and int(self.client_send_node_def_id_int) > 0
+            and isinstance(self.signal_name, str)
+            and self.signal_name.strip() != ""
+        )
+
+    def composite_index_for_port(self, *, port_name: str, param_index: int, fallback_index: int) -> int:
+        if str(port_name).strip() == "目标玩家" and isinstance(self.target_player_port_index, int):
+            return int(self.target_player_port_index)
+        if str(port_name).strip() == SIGNAL_NAME_PORT and isinstance(self.signal_name_port_index, int):
+            return int(self.signal_name_port_index)
+        indices = self.param_port_indices
+        if isinstance(indices, list) and 0 <= int(param_index) < len(indices):
+            value = indices[int(param_index)]
+            if isinstance(value, int):
+                return int(value)
+        return int(fallback_index)
+
+
+def build_client_send_signal_binding_plan(
+    *,
+    graph_node_id: str,
+    node_type_id_int: int,
+    input_constants: Mapping[str, object],
+    client_send_node_def_id_by_signal_name: Dict[str, int] | None,
+    client_send_target_player_port_index_by_signal_name: Dict[str, int] | None,
+    client_send_signal_name_port_index_by_signal_name: Dict[str, int] | None,
+    client_send_param_port_indices_by_signal_name: Dict[str, List[int]] | None,
+    node_index_int: int,
+) -> ClientSendSignalBindingPlan:
+    empty = ClientSendSignalBindingPlan(
+        signal_name=None,
+        client_send_node_def_id_int=None,
+        target_player_port_index=None,
+        signal_name_port_index=None,
+        param_port_indices=None,
+    )
+    if not is_client_send_signal_node_type(int(node_type_id_int)):
+        return empty
+
+    const_signal_name = input_constants.get(SIGNAL_NAME_PORT)
+    if not (isinstance(const_signal_name, str) and str(const_signal_name).strip()):
+        raise ValueError(
+            "发送客户端脚本信号 节点的 '信号名' 必须是字符串常量："
+            f"node_index={int(node_index_int)} graph_node_id={str(graph_node_id)!r} "
+            f"input_constants keys={sorted(list(input_constants.keys()))!r}"
+        )
+    signal_name = str(const_signal_name).strip()
+
+    def _lookup_int(mapping: Dict[str, int] | None) -> int | None:
+        if isinstance(mapping, dict):
+            value = mapping.get(str(signal_name))
+            if isinstance(value, int):
+                return int(value)
+        return None
+
+    node_def_id_int = _lookup_int(client_send_node_def_id_by_signal_name)
+    if not (isinstance(node_def_id_int, int) and node_def_id_int > 0):
+        raise ValueError(
+            "发送客户端脚本信号 缺少该信号的 node_def_id（需要自包含信号 bundle 或基底存档映射）："
+            f"node_index={int(node_index_int)} signal={signal_name!r}"
+        )
+
+    target_player_port_index = _lookup_int(client_send_target_player_port_index_by_signal_name)
+    signal_name_port_index = _lookup_int(client_send_signal_name_port_index_by_signal_name)
+
+    param_port_indices: List[int] | None = None
+    if isinstance(client_send_param_port_indices_by_signal_name, dict):
+        value = client_send_param_port_indices_by_signal_name.get(str(signal_name))
+        if isinstance(value, list):
+            param_port_indices = [int(x) for x in value if isinstance(x, int)]
+
+    return ClientSendSignalBindingPlan(
+        signal_name=str(signal_name),
+        client_send_node_def_id_int=int(node_def_id_int),
+        target_player_port_index=target_player_port_index,
+        signal_name_port_index=signal_name_port_index,
+        param_port_indices=param_port_indices,
     )
 

@@ -190,6 +190,7 @@ def write_graph_model_to_gil_pure_json(
         signal_send_node_def_id_by_signal_name=signal_maps.send_node_def_id_by_signal_name,
         signal_listen_node_def_id_by_signal_name=signal_maps.listen_node_def_id_by_signal_name,
         signal_server_node_def_id_by_signal_name=signal_maps.server_send_node_def_id_by_signal_name,
+        signal_client_send_node_def_id_by_signal_name=signal_maps.client_send_node_def_id_by_signal_name,
         prefer_signal_specific_type_id=bool(prefer_signal_specific_type_id),
     )
 
@@ -263,8 +264,13 @@ def write_graph_model_to_gil_pure_json(
         signal_listen_param_port_indices_by_signal_name=signal_maps.listen_param_port_indices_by_signal_name,
         signal_server_send_signal_name_port_index_by_signal_name=signal_maps.server_send_signal_name_port_index_by_signal_name,
         signal_server_send_param_port_indices_by_signal_name=signal_maps.server_send_param_port_indices_by_signal_name,
+        signal_client_send_node_def_id_by_signal_name=signal_maps.client_send_node_def_id_by_signal_name,
+        signal_client_send_signal_name_port_index_by_signal_name=signal_maps.client_send_signal_name_port_index_by_signal_name,
+        signal_client_send_param_port_indices_by_signal_name=signal_maps.client_send_param_port_indices_by_signal_name,
+        signal_client_send_target_player_port_index_by_signal_name=signal_maps.client_send_target_player_port_index_by_signal_name,
         signal_param_var_type_ids_by_signal_name=signal_maps.param_var_type_ids_by_signal_name,
         signal_index_by_signal_name=signal_maps.signal_index_by_signal_name,
+        signal_client_send_signal_index_by_signal_name=signal_maps.client_send_signal_index_by_signal_name,
         graph_scope=str(scope),
         graph_variable_type_text_by_name=dict(graph_variable_type_text_by_name),
     )
@@ -306,6 +312,9 @@ def write_graph_model_to_gil_pure_json(
         signal_send_param_port_indices_by_signal_name=signal_maps.send_param_port_indices_by_signal_name,
         signal_listen_param_port_indices_by_signal_name=signal_maps.listen_param_port_indices_by_signal_name,
         signal_server_send_param_port_indices_by_signal_name=signal_maps.server_send_param_port_indices_by_signal_name,
+        signal_client_send_signal_name_port_index_by_signal_name=signal_maps.client_send_signal_name_port_index_by_signal_name,
+        signal_client_send_param_port_indices_by_signal_name=signal_maps.client_send_param_port_indices_by_signal_name,
+        signal_client_send_target_player_port_index_by_signal_name=signal_maps.client_send_target_player_port_index_by_signal_name,
         signal_param_var_type_ids_by_signal_name=signal_maps.param_var_type_ids_by_signal_name,
     )
 

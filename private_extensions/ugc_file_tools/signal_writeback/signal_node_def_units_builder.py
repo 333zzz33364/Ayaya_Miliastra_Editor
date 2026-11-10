@@ -29,6 +29,12 @@ class BuiltSignalNodeDefBundle:
     listen_signal_name_port_index_by_signal_name: Dict[str, int]
     listen_param_port_indices_by_signal_name: Dict[str, List[int]]
 
+    # 发送客户端脚本信号（300005）：服务器 → 客户端脚本，信号名是普通字符串入参
+    client_send_node_def_id_by_signal_name: Dict[str, int]
+    client_send_target_player_port_index_by_signal_name: Dict[str, int]
+    client_send_signal_name_port_index_by_signal_name: Dict[str, int]
+    client_send_param_port_indices_by_signal_name: Dict[str, List[int]]
+
 
 def _default_template_gia_path() -> Path:
     return (
@@ -102,6 +108,7 @@ def build_signal_node_def_bundle_for_signals(
         raise FileNotFoundError(str(template_path))
 
     tpl_send_unit, tpl_listen_unit, tpl_server_unit = _gia_export._load_signal_node_def_templates_from_gia(template_path)
+    tpl_client_send_unit = _gia_export._load_client_send_node_def_template_from_gia()
 
     used_node_def_ids: set[int] = set()
     used_ports: set[int] = set()
@@ -118,6 +125,11 @@ def build_signal_node_def_bundle_for_signals(
     listen_signal_name_port_index_by_signal_name: Dict[str, int] = {}
     listen_param_port_indices_by_signal_name: Dict[str, List[int]] = {}
 
+    client_send_node_def_id_by_signal_name: Dict[str, int] = {}
+    client_send_target_player_port_index_by_signal_name: Dict[str, int] = {}
+    client_send_signal_name_port_index_by_signal_name: Dict[str, int] = {}
+    client_send_param_port_indices_by_signal_name: Dict[str, List[int]] = {}
+
     # 对齐 `export_basic_signals_to_gia`：按 signal_name 稳定排序后再做连续编号，
     # 避免因输入顺序不同导致 node_def_id/port_index 抖动。
     items: list[Mapping[str, Any]] = []
@@ -133,6 +145,9 @@ def build_signal_node_def_bundle_for_signals(
     next_signal_index = int(signal_index_start)
     next_port_index = int(port_index_start)
     next_node_def_id = int(node_def_id_start)
+    # 发送客户端脚本信号使用独立的 0x6000 号段与端口段，避免改变已有 3 类节点的编号。
+    next_client_send_node_def_id = 0x60000100
+    next_client_port_index = 2000
 
     for item in items:
         signal_name = str(item.get("signal_name") or "").strip()
@@ -157,12 +172,16 @@ def build_signal_node_def_bundle_for_signals(
         server_node_def_id = int(send_node_def_id + 2)
         next_node_def_id = int(send_node_def_id + 3)
 
+        client_send_node_def_id = int(next_client_send_node_def_id)
+        next_client_send_node_def_id += 1
+
         signal_index_int = int(next_signal_index)
         next_signal_index += 1
 
         send_meta = _gia_export._build_node_def_meta_dict(node_def_id_int=send_node_def_id, scope_code_int=20000)
         listen_meta = _gia_export._build_node_def_meta_dict(node_def_id_int=listen_node_def_id, scope_code_int=20000)
         server_meta = _gia_export._build_node_def_meta_dict(node_def_id_int=server_node_def_id, scope_code_int=20002)
+        client_send_meta = _gia_export._build_node_def_meta_dict(node_def_id_int=client_send_node_def_id, scope_code_int=20000)
 
         # 分配端口索引块：一段连续的 port_index 供 send/listen/server + params 使用。
         # 这与真源样本一致（例如 信号名端口为 142，处于 140 段）。
@@ -185,11 +204,30 @@ def build_signal_node_def_bundle_for_signals(
         server_extra_port = int(port_block + 10)
         server_signal_name_port = int(port_block + 11)
 
+        # 发送客户端脚本信号：独立端口块（flow in/out + 目标玩家 + 信号名 + params）
+        client_block_width = 4 + max(len(params), 0)
+        client_port_block = _ensure_unique_port_block(int(next_client_port_index), width=int(client_block_width), used=used_ports)
+        next_client_port_index = int(client_port_block + client_block_width)
+
+        client_flow_in = int(client_port_block)
+        client_flow_out = int(client_port_block + 1)
+        client_target_player_port = int(client_port_block + 2)
+        client_signal_name_port = int(client_port_block + 3)
+
         send_param_items: List[Dict[str, Any]] = []
         server_param_items: List[Dict[str, Any]] = []
         listen_param_ports: List[Dict[str, Any]] = []
         send_param_ports: List[int] = []
         send_param_vts: List[int] = []
+        client_param_ports: List[int] = []
+        client_param_items: List[Dict[str, Any]] = [
+            _gia_export._build_param_item_message_from_param_spec(
+                param_spec={"param_name": "目标玩家", "type_id": 1},
+                port_index_int=int(client_target_player_port),
+                param_ordinal_int=0,
+                for_server_node=False,
+            )
+        ]
 
         next_param_port = int(port_block + 12)
         for param_ordinal, p in enumerate(list(params)):
@@ -202,6 +240,8 @@ def build_signal_node_def_bundle_for_signals(
             listen_port = int(next_param_port + 1)
             server_port = int(next_param_port + 2)
             next_param_port += 3
+
+            client_port = int(client_port_block + 4 + int(param_ordinal))
 
             send_param_items.append(
                 _gia_export._build_param_item_message_from_param_spec(
@@ -227,6 +267,15 @@ def build_signal_node_def_bundle_for_signals(
                     "port_index": int(listen_port),
                 }
             )
+            client_param_ports.append(int(client_port))
+            client_param_items.append(
+                _gia_export._build_param_item_message_from_param_spec(
+                    param_spec=p,
+                    port_index_int=int(client_port),
+                    param_ordinal_int=int(param_ordinal) + 1,
+                    for_server_node=False,
+                )
+            )
             send_param_ports.append(int(send_port))
             send_param_vts.append(int(type_id))
 
@@ -234,20 +283,24 @@ def build_signal_node_def_bundle_for_signals(
         send_unit = copy.deepcopy(dict(tpl_send_unit))
         listen_unit = copy.deepcopy(dict(tpl_listen_unit))
         server_unit = copy.deepcopy(dict(tpl_server_unit))
+        client_send_unit = copy.deepcopy(dict(tpl_client_send_unit))
 
         # patch ids + related ids
         _gia_export._set_graph_unit_id_inplace(send_unit, node_def_id_int=send_node_def_id)
         _gia_export._set_graph_unit_id_inplace(listen_unit, node_def_id_int=listen_node_def_id)
         _gia_export._set_graph_unit_id_inplace(server_unit, node_def_id_int=server_node_def_id)
+        _gia_export._set_graph_unit_id_inplace(client_send_unit, node_def_id_int=client_send_node_def_id)
 
-        _gia_export._set_graph_unit_related_ids_inplace(send_unit, related_node_def_ids=[listen_node_def_id, server_node_def_id])
-        _gia_export._set_graph_unit_related_ids_inplace(listen_unit, related_node_def_ids=[send_node_def_id, server_node_def_id])
-        _gia_export._set_graph_unit_related_ids_inplace(server_unit, related_node_def_ids=[send_node_def_id, listen_node_def_id])
+        _gia_export._set_graph_unit_related_ids_inplace(send_unit, related_node_def_ids=[listen_node_def_id, server_node_def_id, client_send_node_def_id])
+        _gia_export._set_graph_unit_related_ids_inplace(listen_unit, related_node_def_ids=[send_node_def_id, server_node_def_id, client_send_node_def_id])
+        _gia_export._set_graph_unit_related_ids_inplace(server_unit, related_node_def_ids=[send_node_def_id, listen_node_def_id, client_send_node_def_id])
+        _gia_export._set_graph_unit_related_ids_inplace(client_send_unit, related_node_def_ids=[send_node_def_id, server_node_def_id, listen_node_def_id])
 
         # patch node defs
         send_node_def = _gia_export._find_node_def_object_in_graph_unit(send_unit, expected_node_def_name="发送信号")
         listen_node_def = _gia_export._find_node_def_object_in_graph_unit(listen_unit, expected_node_def_name="监听信号")
         server_node_def = _gia_export._find_node_def_object_in_graph_unit(server_unit, expected_node_def_name="向服务器节点图发送信号")
+        client_send_node_def = _gia_export._find_node_def_object_in_graph_unit(client_send_unit, expected_node_def_name="发送客户端脚本信号")
 
         send_node_def = _gia_export._reset_send_node_def_for_new_signal(
             node_def=send_node_def,
@@ -286,6 +339,20 @@ def build_signal_node_def_bundle_for_signals(
             signal_name_port_index=server_signal_name_port,
             server_param_items=server_param_items,
         )
+        client_send_node_def = _gia_export._reset_client_send_node_def_for_new_signal(
+            node_def=client_send_node_def,
+            signal_index_int=signal_index_int,
+            node_def_id_int=client_send_node_def_id,
+            signal_name=signal_name,
+            send_meta_dict=send_meta,
+            listen_meta_dict=listen_meta,
+            server_meta_dict=server_meta,
+            flow_in_port_index=client_flow_in,
+            flow_out_port_index=client_flow_out,
+            target_player_port_index=client_target_player_port,
+            signal_name_port_index=client_signal_name_port,
+            client_param_items=client_param_items,
+        )
 
         # write patched node_def back to units (reuse export_basic_signals_to_gia strategy)
         def _replace_node_def_inplace(unit: Dict[str, Any], *, expected: str, new_obj: Dict[str, Any]) -> None:
@@ -315,10 +382,16 @@ def build_signal_node_def_bundle_for_signals(
         _replace_node_def_inplace(send_unit, expected="发送信号", new_obj=send_node_def)
         _replace_node_def_inplace(listen_unit, expected="监听信号", new_obj=listen_node_def)
         _replace_node_def_inplace(server_unit, expected="向服务器节点图发送信号", new_obj=server_node_def)
+        _replace_node_def_inplace(client_send_unit, expected="发送客户端脚本信号", new_obj=client_send_node_def)
 
         # collect outputs
-        dependency_units.extend([send_unit, listen_unit, server_unit])
-        related_ids.extend([_make_related_id(send_node_def_id), _make_related_id(listen_node_def_id), _make_related_id(server_node_def_id)])
+        dependency_units.extend([send_unit, listen_unit, server_unit, client_send_unit])
+        related_ids.extend([
+            _make_related_id(send_node_def_id),
+            _make_related_id(listen_node_def_id),
+            _make_related_id(server_node_def_id),
+            _make_related_id(client_send_node_def_id),
+        ])
 
         send_node_def_id_by_signal_name[str(signal_name)] = int(send_node_def_id)
         send_signal_name_port_index_by_signal_name[str(signal_name)] = int(send_signal_name_port)
@@ -333,6 +406,11 @@ def build_signal_node_def_bundle_for_signals(
             if isinstance(x, Mapping) and isinstance(x.get("port_index"), int)
         ]
 
+        client_send_node_def_id_by_signal_name[str(signal_name)] = int(client_send_node_def_id)
+        client_send_target_player_port_index_by_signal_name[str(signal_name)] = int(client_target_player_port)
+        client_send_signal_name_port_index_by_signal_name[str(signal_name)] = int(client_signal_name_port)
+        client_send_param_port_indices_by_signal_name[str(signal_name)] = list(client_param_ports)
+
     return BuiltSignalNodeDefBundle(
         dependency_units=list(dependency_units),
         related_ids=list(related_ids),
@@ -343,5 +421,9 @@ def build_signal_node_def_bundle_for_signals(
         listen_node_def_id_by_signal_name=dict(listen_node_def_id_by_signal_name),
         listen_signal_name_port_index_by_signal_name=dict(listen_signal_name_port_index_by_signal_name),
         listen_param_port_indices_by_signal_name=dict(listen_param_port_indices_by_signal_name),
+        client_send_node_def_id_by_signal_name=dict(client_send_node_def_id_by_signal_name),
+        client_send_target_player_port_index_by_signal_name=dict(client_send_target_player_port_index_by_signal_name),
+        client_send_signal_name_port_index_by_signal_name=dict(client_send_signal_name_port_index_by_signal_name),
+        client_send_param_port_indices_by_signal_name=dict(client_send_param_port_indices_by_signal_name),
     )
 

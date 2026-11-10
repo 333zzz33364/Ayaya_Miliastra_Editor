@@ -8,6 +8,8 @@ from ugc_file_tools.node_graph_semantics.graph_generater import (
 )
 from ugc_file_tools.node_graph_semantics.pin_rules import map_inparam_pin_index_for_node as _map_inparam_pin_index_for_node
 from ugc_file_tools.node_graph_semantics.signal_binding import (
+    SIGNAL_NAME_PORT,
+    is_client_send_signal_node_type,
     map_send_signal_inparam_indices_for_dst_port,
     should_use_listen_signal_meta_binding,
     should_use_send_signal_meta_binding,
@@ -155,6 +157,9 @@ def build_data_conns_by_dst_pin(
             raise ValueError(f"dst_port 不在 dst_node.inputs(data) 中：dst={dst_title!r}.{dst_port!r} inputs={dst_data_inputs!r}")
 
         dst_type_id_int = node_type_id_int_by_graph_node_id.get(str(dst_node_id))
+        is_client_send_signal = bool(
+            isinstance(dst_type_id_int, int) and is_client_send_signal_node_type(int(dst_type_id_int))
+        )
         send_signal_use_meta_binding = should_use_send_signal_meta_binding(
             node_type_id_int=(int(dst_type_id_int) if isinstance(dst_type_id_int, int) else None),
             graph_node_id=str(dst_node_id),
@@ -166,7 +171,23 @@ def build_data_conns_by_dst_pin(
             listen_signal_nodes_with_signal_name_in_edge=set(listen_signal_nodes_with_signal_name_in_edge or set()),
         )
 
-        if bool(send_signal_use_meta_binding) or bool(listen_signal_use_meta_binding):
+        if bool(is_client_send_signal):
+            # 发送客户端脚本信号：信号名是 Kind=5 特殊输入 pin，不参与普通数据边；
+            # 其余输入顺序与节点实例导出保持一致：目标玩家 → 信号参数…。
+            if str(dst_port).strip() == SIGNAL_NAME_PORT:
+                continue
+            filtered_inputs = [p for p in list(dst_data_inputs) if str(p).strip() != SIGNAL_NAME_PORT]
+            dst_slot_index = int(filtered_inputs.index(str(dst_port)))
+            dst_record = node_record_by_graph_node_id.get(str(dst_node_id))
+            dst_shell_index, dst_kernel_index = _resolve_pin_indices(
+                dst_record,
+                is_flow=False,
+                direction="In",
+                port_name=str(dst_port),
+                ordinal=int(dst_slot_index),
+                fallback_index=int(dst_slot_index),
+            )
+        elif bool(send_signal_use_meta_binding) or bool(listen_signal_use_meta_binding):
             dst_slot_index, dst_shell_index, dst_kernel_index = map_send_signal_inparam_indices_for_dst_port(
                 dst_data_inputs=list(dst_data_inputs),
                 dst_port=str(dst_port),

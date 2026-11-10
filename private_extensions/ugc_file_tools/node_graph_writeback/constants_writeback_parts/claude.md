@@ -13,6 +13,7 @@
 - `stage_prepare_node.py`：单节点写回前的准备（端口列表、信号绑定判定、候选类型收集等）；信号 META binding **不依赖隐藏字段 `__signal_id`**，仅要“信号名为字符串常量且该端口无 data 入边”即可启用，避免参数 pins 整体错位；动态端口节点补丁：`拼装列表` 写回 pin0(数量)；`拼装字典` 写回 pin0(len，键/值端口数量，并按 Plan 支持特例不写)；字典 KV / `S<T:D<K,V>>` concrete+indexOfConcrete / 拼装字典 concrete 的“决策 Plan”统一复用 `ugc_file_tools.node_graph_semantics.type_binding_plan`，避免与导出侧分叉；并且 **Variant/Generic concrete 收敛不强依赖 NodeEditorPack**：当 NEP 缺失/画像缺失，或端口 pin_def 无法命中时，会回退使用 GraphModel 的 `input_port_types/input_types` + 连线推断收集候选类型，避免 runtime_id 退化导致 data-edge 丢失。
   - 兼容：监听信号“事件节点”（GraphModel: `node_def_ref.kind=event` 且 title/key=信号名）在 prepare 阶段会回退使用【监听信号】NodeDef，以便后续阶段能按同口径修剪 records（尤其是禁止保留 OutParam 占位，避免端口错位）。
   - 对齐真源：当 base `.gil` 能提供 `signal_name -> signal_index` 映射时，发送信号/监听信号/向服务端发送信号三类节点在命中静态绑定后都会携带 `signal_binding_signal_index_int`，供后续阶段写入 `node.field_9(signal_index)`（signal-specific runtime 下必需）。
+  - 【未读】发送客户端脚本信号使用客户端定义自身 `metadata4.5` 的独立索引写入实例 `field9`，不能套用服务端 entry6；同名定义有副本时，以注册表 entry9 指定的 ID 同步选择定义、端口与索引。
   - 对齐 after_game：为 `对字典设置或新增键值对` 补齐 `值` 端口的占位 InParam(index=2) pin（当模板样本缺失该 record 时），避免 missing pins。
 - `stage_inparam_constants.py`：input_constants → InParam pins 写回（含 enum 常量映射与结构体字段写回特例；端口类型读取兼容 `input_port_types/input_types`；信号静态绑定下会按信号规格覆写参数 VarType，并在 base 映射可用时写入参数 pins 的 compositePinIndex；同时对齐回归用例：信号参数 pin 的 i2(kernel) 固定为 0（shell=slot, kernel=0），且不依赖 `__signal_id`）；【获取局部变量】`初始值` 的“纯数字字符串→GUID 空占位”补丁为**按类型证据触发**（仅当端口已能确定为 GUID 时生效，避免误伤整数/布尔初始值）；`设置自定义变量(Set_Custom_Variable)` 会将『是否触发事件』布尔常量镜像写入第二个 Bool 入参 pin（避免真源/UI 端口显示错位）。
   - Create_Prefab（`创建元件`）：对齐真源端口口径，补齐『是否覆写等级』InParam 的 PinIndex2(kernel)=7；当覆写等级为 False 时，跳过/删除 `等级/单位标签索引列表` 常量 pins，避免多余端口落盘导致编辑器/真源解释错位。
@@ -24,7 +25,7 @@
   - `stage_signal_meta.py`：信号节点 META pin 写回与 records 修剪（对齐真源样本）。
     - generic runtime（300000/300001/300002）：当 base 映射可用时写入 META 的 source_ref + compositePinIndex，并清理模板残留的 flow field_7。
     - generic runtime（300000/300001/300002）：META pin 必须写入 `field_4=6(Str)`（避免 `type_id_int=null` 导致信号绑定/端口展开错位）。
-    - signal-specific runtime（常见 0x6000xxxx/0x6080xxxx）：META pin 的 `field_4` 通常省略，写回侧不强制写入；但当 base 映射可用时，写回侧仍会显式写入 META 的 source_ref + compositePinIndex（对齐 GIA meta binding，避免端口错位/串号）。
+    - 【未读】signal-specific runtime（常见 0x4000xxxx/0x6000xxxx/0x6080xxxx）：META pin 省略 `field_4` 与 `Index.field100` source_ref，定义由节点 NodeProperty 绑定；base 映射可用时保留 compositePinIndex。GIL 实例不能套用 GIA 的 META source_ref 绑定形式。
     - 对齐真源：signal-specific runtime 下，META pin 的“信号名字符串 VarBase”其 ItemType.type_server(field_100) 常为 empty bytes（而非显式 `{field_1=6(Str)}`），写回侧在该场景会主动归一化为 empty bytes，避免官方侧更严格校验失败。
     - 当 base 缺失 node_def/106 导致无法直接拿到“信号名端口 index”时，会按真源端口块布局基于“参数端口 index”反推（send/listen/server_send 使用不同 offset），避免退化为 `min(param)-1` 导致 compositePinIndex 错位。
 - `stage_dynamic_ports.py`：动态端口节点（拼装字典/拼装列表）占位 pins 同步与特例补丁（端口类型读取兼容 `output_port_types/output_types` 与 `input_port_types/input_types`）；其中 `拼装列表` 会根据输出端口的“列表别名”（如 `字符串列表/实体列表/三维向量列表/...`）推导元素类型，并同步写回实际端口对应 pins 的 VarType + `ConcreteBase.indexOfConcrete`，避免模板默认类型导致端口类型收敛错误。

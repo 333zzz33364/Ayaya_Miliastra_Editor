@@ -667,6 +667,96 @@ def _load_signal_node_def_templates_from_gia(template_gia_path: Path) -> Tuple[D
     return _pick("发送信号"), _pick("监听信号"), _pick("向服务器节点图发送信号")
 
 
+def _default_client_send_template_gia_path() -> Path:
+    return (
+        repo_root()
+        / "private_extensions"
+        / "ugc_file_tools"
+        / "builtin_resources"
+        / "gia_templates"
+        / "signals"
+        / "signal_node_defs_client_send.gia"
+    ).resolve()
+
+
+def _load_client_send_node_def_template_from_gia(template_gia_path: Path | None = None) -> Dict[str, Any]:
+    """
+    从模板 `.gia` 中提取“发送客户端脚本信号”的 GraphUnit（深拷贝返回）。
+
+    模板来源：真源样本 `玩家掉线检测、重连检测、断网检测_classic.gia` 中的同名 unit。
+    该 unit 同时包含 node_def 与端口结构；每个信号只需 clone 后定点 patch。
+    """
+    path = Path(template_gia_path).resolve() if template_gia_path is not None else _default_client_send_template_gia_path()
+    if not path.is_file():
+        raise FileNotFoundError(str(path))
+
+    proto_bytes = unwrap_gia_container(path, check_header=False)
+    root_fields, consumed = decode_message_to_field_map(
+        data_bytes=proto_bytes,
+        start_offset=0,
+        end_offset=len(proto_bytes),
+        remaining_depth=16,
+    )
+    if consumed != len(proto_bytes):
+        raise ValueError("protobuf 解析未消费完整字节流（发送客户端脚本信号模板 .gia）")
+    root_msg = decoded_field_map_to_numeric_message(root_fields)
+    if not isinstance(root_msg, dict):
+        raise ValueError("发送客户端脚本信号模板 .gia root 不是 dict")
+
+    for unit in _iter_graph_units_in_root(dict(root_msg)):
+        if _get_graph_unit_name(unit) == "发送客户端脚本信号":
+            return dict(unit)
+    raise ValueError(f"发送客户端脚本信号模板缺少 GraphUnit：{str(path)!r}")
+
+
+def _reset_client_send_node_def_for_new_signal(
+    *,
+    node_def: Dict[str, Any],
+    signal_index_int: int,
+    node_def_id_int: int,
+    signal_name: str,
+    send_meta_dict: Dict[str, Any],
+    listen_meta_dict: Dict[str, Any],
+    server_meta_dict: Dict[str, Any],
+    flow_in_port_index: int,
+    flow_out_port_index: int,
+    target_player_port_index: int,
+    signal_name_port_index: int,
+    client_param_items: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """
+    按新信号 patch 发送客户端脚本信号 node_def。
+
+    与 send/listen 的 META pin 方案不同：该节点的“信号名”是普通字符串入参（field 106），
+    并直接写 StringBaseValue（106.4.2.105）。参数列表位于 field 102，首项固定为“目标玩家”。
+    """
+    signal_helpers._ensure_node_def_name(node_def, "发送客户端脚本信号")
+    _set_node_def_id_inplace(node_def, node_def_id_int=int(node_def_id_int))
+    _set_signal_index_inplace(node_def, signal_index_int=int(signal_index_int))
+
+    _set_port_index_inplace(_ensure_single_dict_container(node_def, "100"), port_index_int=int(flow_in_port_index))
+    _set_port_index_inplace(_ensure_single_dict_container(node_def, "101"), port_index_int=int(flow_out_port_index))
+
+    node_def["102"] = list(client_param_items)
+
+    port_106 = _ensure_dict(node_def.get("106"), hint="client_send.106(signal_name)")
+    port_106["8"] = int(signal_name_port_index)
+    value_base = _ensure_dict(port_106.get("4"), hint="client_send.106.4")
+    value_inner = _ensure_dict(value_base.get("2"), hint="client_send.106.4.2")
+    value_inner["105"] = {"1": str(signal_name)}
+
+    sig = _ensure_dict(node_def.get("107"), hint="client_send.107(signal)")
+    sig108 = _ensure_dict(sig.get("108"), hint="client_send.107.108")
+    sig108["1"] = str(signal_name)
+    sig108["2"] = dict(send_meta_dict)
+    sig108["3"] = dict(server_meta_dict)
+    sig108["4"] = dict(listen_meta_dict)
+
+    node_def["203"] = 1
+    node_def["204"] = 8
+    return node_def
+
+
 def export_basic_signals_to_gia(*, plan: ExportBasicSignalsGiaPlan) -> Dict[str, Any]:
     import copy
     import shutil
@@ -692,16 +782,20 @@ def export_basic_signals_to_gia(*, plan: ExportBasicSignalsGiaPlan) -> Dict[str,
     if not template_gia.is_file():
         raise FileNotFoundError(str(template_gia))
     tpl_send_unit, tpl_listen_unit, tpl_server_unit = _load_signal_node_def_templates_from_gia(template_gia)
+    tpl_client_send_unit = _load_client_send_node_def_template_from_gia()
 
     # 预先定位 node_def（并把定位结果写回到 unit 中，后续只做拷贝+patch）
     tpl_send_node_def = _find_node_def_object_in_graph_unit(dict(tpl_send_unit), expected_node_def_name="发送信号")
     tpl_listen_node_def = _find_node_def_object_in_graph_unit(dict(tpl_listen_unit), expected_node_def_name="监听信号")
     tpl_server_node_def = _find_node_def_object_in_graph_unit(dict(tpl_server_unit), expected_node_def_name="向服务器节点图发送信号")
+    tpl_client_send_node_def = _find_node_def_object_in_graph_unit(dict(tpl_client_send_unit), expected_node_def_name="发送客户端脚本信号")
 
     # 分配策略：对齐写回脚本默认值（node_def_id 从 0x60000001 起；signal_index 从 1 起；port_index 从 1 起）
     next_node_def_id = 0x60000001
+    next_client_send_node_def_id = 0x60000100
     next_signal_index = 1
     next_port_index = 1
+    next_client_port_index = 2000
 
     send_units: List[Dict[str, Any]] = []
     accessory_units: List[Dict[str, Any]] = []
@@ -718,12 +812,16 @@ def export_basic_signals_to_gia(*, plan: ExportBasicSignalsGiaPlan) -> Dict[str,
         server_node_def_id = int(next_node_def_id + 2)
         next_node_def_id += 3
 
+        client_send_node_def_id = int(next_client_send_node_def_id)
+        next_client_send_node_def_id += 1
+
         signal_index_int = int(next_signal_index)
         next_signal_index += 1
 
         send_meta = _build_node_def_meta_dict(node_def_id_int=send_node_def_id, scope_code_int=20000)
         listen_meta = _build_node_def_meta_dict(node_def_id_int=listen_node_def_id, scope_code_int=20000)
         server_meta = _build_node_def_meta_dict(node_def_id_int=server_node_def_id, scope_code_int=20002)
+        client_send_meta = _build_node_def_meta_dict(node_def_id_int=client_send_node_def_id, scope_code_int=20000)
 
         # allocate fixed port indices
         send_flow_in = int(next_port_index)
@@ -744,9 +842,23 @@ def export_basic_signals_to_gia(*, plan: ExportBasicSignalsGiaPlan) -> Dict[str,
         server_signal_name_port = int(next_port_index + 3)
         next_port_index += 4
 
+        client_flow_in = int(next_client_port_index)
+        client_flow_out = int(next_client_port_index + 1)
+        client_target_player_port = int(next_client_port_index + 2)
+        client_signal_name_port = int(next_client_port_index + 3)
+        next_client_port_index += 4
+
         send_param_items: List[Dict[str, Any]] = []
         server_param_items: List[Dict[str, Any]] = []
         listen_param_ports: List[Dict[str, Any]] = []
+        client_param_items: List[Dict[str, Any]] = [
+            _build_param_item_message_from_param_spec(
+                param_spec={"param_name": "目标玩家", "type_id": 1},
+                port_index_int=int(client_target_player_port),
+                param_ordinal_int=0,
+                for_server_node=False,
+            )
+        ]
 
         for param_ordinal, p in enumerate(list(params)):
             param_name = str(p.get("param_name") or "").strip()
@@ -758,6 +870,9 @@ def export_basic_signals_to_gia(*, plan: ExportBasicSignalsGiaPlan) -> Dict[str,
             listen_port = int(next_port_index + 1)
             server_port = int(next_port_index + 2)
             next_port_index += 3
+
+            client_port = int(next_client_port_index)
+            next_client_port_index += 1
 
             send_param_items.append(
                 _build_param_item_message_from_param_spec(
@@ -783,25 +898,37 @@ def export_basic_signals_to_gia(*, plan: ExportBasicSignalsGiaPlan) -> Dict[str,
                     "port_index": int(listen_port),
                 }
             )
+            client_param_items.append(
+                _build_param_item_message_from_param_spec(
+                    param_spec=p,
+                    port_index_int=int(client_port),
+                    param_ordinal_int=int(param_ordinal) + 1,
+                    for_server_node=False,
+                )
+            )
 
         # build units by cloning templates
         send_unit = copy.deepcopy(dict(tpl_send_unit))
         listen_unit = copy.deepcopy(dict(tpl_listen_unit))
         server_unit = copy.deepcopy(dict(tpl_server_unit))
+        client_send_unit = copy.deepcopy(dict(tpl_client_send_unit))
 
         # patch graph unit ids + related ids
         _set_graph_unit_id_inplace(send_unit, node_def_id_int=send_node_def_id)
         _set_graph_unit_id_inplace(listen_unit, node_def_id_int=listen_node_def_id)
         _set_graph_unit_id_inplace(server_unit, node_def_id_int=server_node_def_id)
+        _set_graph_unit_id_inplace(client_send_unit, node_def_id_int=client_send_node_def_id)
 
-        _set_graph_unit_related_ids_inplace(send_unit, related_node_def_ids=[listen_node_def_id, server_node_def_id])
-        _set_graph_unit_related_ids_inplace(listen_unit, related_node_def_ids=[send_node_def_id, server_node_def_id])
-        _set_graph_unit_related_ids_inplace(server_unit, related_node_def_ids=[send_node_def_id, listen_node_def_id])
+        _set_graph_unit_related_ids_inplace(send_unit, related_node_def_ids=[listen_node_def_id, server_node_def_id, client_send_node_def_id])
+        _set_graph_unit_related_ids_inplace(listen_unit, related_node_def_ids=[send_node_def_id, server_node_def_id, client_send_node_def_id])
+        _set_graph_unit_related_ids_inplace(server_unit, related_node_def_ids=[send_node_def_id, listen_node_def_id, client_send_node_def_id])
+        _set_graph_unit_related_ids_inplace(client_send_unit, related_node_def_ids=[send_node_def_id, server_node_def_id, listen_node_def_id])
 
         # patch node defs (定位到 unit 内部对象并原地改）
         send_node_def = _find_node_def_object_in_graph_unit(send_unit, expected_node_def_name="发送信号")
         listen_node_def = _find_node_def_object_in_graph_unit(listen_unit, expected_node_def_name="监听信号")
         server_node_def = _find_node_def_object_in_graph_unit(server_unit, expected_node_def_name="向服务器节点图发送信号")
+        client_send_node_def = _find_node_def_object_in_graph_unit(client_send_unit, expected_node_def_name="发送客户端脚本信号")
 
         send_node_def = _reset_send_node_def_for_new_signal(
             node_def=send_node_def,
@@ -840,6 +967,20 @@ def export_basic_signals_to_gia(*, plan: ExportBasicSignalsGiaPlan) -> Dict[str,
             signal_name_port_index=server_signal_name_port,
             server_param_items=server_param_items,
         )
+        client_send_node_def = _reset_client_send_node_def_for_new_signal(
+            node_def=client_send_node_def,
+            signal_index_int=signal_index_int,
+            node_def_id_int=client_send_node_def_id,
+            signal_name=signal_name,
+            send_meta_dict=send_meta,
+            listen_meta_dict=listen_meta,
+            server_meta_dict=server_meta,
+            flow_in_port_index=client_flow_in,
+            flow_out_port_index=client_flow_out,
+            target_player_port_index=client_target_player_port,
+            signal_name_port_index=client_signal_name_port,
+            client_param_items=client_param_items,
+        )
 
         # 将 patched node_def 写回 unit：用“就地递归替换”的方式把找到的对象替换回原树
         def _replace_node_def_inplace(unit: Dict[str, Any], *, expected: str, new_obj: Dict[str, Any]) -> None:
@@ -869,9 +1010,10 @@ def export_basic_signals_to_gia(*, plan: ExportBasicSignalsGiaPlan) -> Dict[str,
         _replace_node_def_inplace(send_unit, expected="发送信号", new_obj=send_node_def)
         _replace_node_def_inplace(listen_unit, expected="监听信号", new_obj=listen_node_def)
         _replace_node_def_inplace(server_unit, expected="向服务器节点图发送信号", new_obj=server_node_def)
+        _replace_node_def_inplace(client_send_unit, expected="发送客户端脚本信号", new_obj=client_send_node_def)
 
         send_units.append(send_unit)
-        accessory_units.extend([listen_unit, server_unit])
+        accessory_units.extend([listen_unit, server_unit, client_send_unit])
 
         exported_signal_ids.append(str(record.signal_id_str))
         exported_signal_names.append(str(signal_name))

@@ -59179,6 +59179,22 @@
       "Family": "XXXVI. Structures",
       "Inputs": [],
       "Outputs": []
+    },
+    {
+      "Name": "Send_Client_Script_Signal",
+      "Translations": {
+        "en": "Send Client Script Signal"
+      },
+      "ID": 300005,
+      "Type": "Simple",
+      "Range": "Server",
+      "Class": "Execution",
+      "Family": "XXIV. UI Control Groups",
+      "Inputs": [
+        "Ety",
+        "Str"
+      ],
+      "Outputs": []
     }
   ],
   "EnumList": [

@@ -70,14 +70,15 @@ def append_new_group_from_template_inplace(
     old_group_count = int(len([item for item in list(groups_list) if isinstance(item, dict)]))
     old_field_7 = section.get("7")
     groups_list.append(new_group)
-    new_group_count = int(len([item for item in list(groups_list) if isinstance(item, dict)]))
-    if isinstance(old_field_7, int) and int(old_field_7) == int(old_group_count):
-        section["7"] = int(new_group_count)
+    # section10['7'] 不是可靠的 group 计数：编辑器保存的多图存档里它始终是 1
+    # （实测 5/19/6 张图都是 1），强行改成 group 数会被游戏侧静默拒绝。
+    # 因此这里只保留 base 原值，不再按 group 数更新。
+    _ = (old_group_count, old_field_7, len(groups_list))
 
 
 def append_new_group_pure_json_inplace(*, section: Dict[str, Any], groups_list: list[Any], new_entry: Dict[str, Any]) -> None:
     groups_list.append({"1": [new_entry]})
-    section["7"] = int(len([item for item in list(groups_list) if isinstance(item, dict)]))
+    # 同 append_new_group_from_template_inplace：保留 base 的 section10['7']，不要改成 group 数。
 
 
 def ensure_groups_list_in_section(*, section: Dict[str, Any]) -> list[Any]:

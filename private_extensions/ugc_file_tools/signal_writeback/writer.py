@@ -22,6 +22,7 @@ from ugc_file_tools.wire import replace_length_delimited_fields_payload_bytes_in
 from ugc_file_tools.writeback_defaults import default_signal_template_gil_path
 
 from . import helpers as h
+from .registry_repair import repair_signal_registry
 from .template_cache import load_cached_signal_node_def_templates, save_cached_signal_node_def_templates
 
 
@@ -285,6 +286,8 @@ def add_signals_to_gil(
     signal_entry_list = h._ensure_path_list(section5, "3")
 
     added_signals: List[Dict[str, Any]] = []
+    updated_signals: List[Dict[str, Any]] = []
+    updated_params_by_name: Dict[str, List[Dict[str, Any]]] = {}
     did_bulk_clone_from_template = False
 
     def _decode_server_meta_from_entry(entry: Mapping[str, Any]) -> Dict[str, Any] | None:
@@ -370,6 +373,38 @@ def add_signals_to_gil(
         except Exception:
             return None
         return decoded2 if isinstance(decoded2, Mapping) else None
+
+    def _extract_signal_signature(entry: Mapping[str, Any]) -> List[tuple[str, int]] | None:
+        """从 entry.field_4 读取有序的 (参数名, VarType) 签名。"""
+        signature: List[tuple[str, int]] = []
+        for binary_text in _extract_signal_param_definition_texts(entry):
+            decoded = _decode_signal_param_definition_text(binary_text)
+            if not isinstance(decoded, Mapping):
+                return None
+
+            field_1 = decoded.get("field_1")
+            param_name = ""
+            if isinstance(field_1, Mapping):
+                param_name_value = field_1.get("utf8") or field_1.get("text")
+                if isinstance(param_name_value, str):
+                    param_name = str(param_name_value)
+                if param_name == "":
+                    raw_hex = field_1.get("raw_hex")
+                    if isinstance(raw_hex, str):
+                        try:
+                            param_name = bytes.fromhex(raw_hex).decode("utf-8")
+                        except (ValueError, UnicodeDecodeError):
+                            return None
+            elif isinstance(field_1, str):
+                param_name = str(field_1)
+
+            type_id = h._extract_nested_int(decoded, ["field_2", "int"])
+            if not isinstance(type_id, int):
+                type_id = h._extract_nested_int(decoded, ["field_2"])
+            if param_name == "" or not isinstance(type_id, int):
+                return None
+            signature.append((str(param_name), int(type_id)))
+        return signature
 
     def _signal_entry_has_missing_send_to_server_port_index(entry: Mapping[str, Any]) -> bool:
         for binary_text in _extract_signal_param_definition_texts(entry):
@@ -549,6 +584,13 @@ def add_signals_to_gil(
         for entry in h._extract_signal_entries_from_payload_root(base_payload_root)
         if isinstance(entry, Mapping)
     }
+    existing_signal_entry_by_name: Dict[str, tuple[int, Dict[str, Any]]] = {}
+    for entry_index, entry in enumerate(list(signal_entry_list)):
+        if not isinstance(entry, dict):
+            continue
+        signal_name = str(entry.get("3") or "").strip()
+        if signal_name != "" and signal_name not in existing_signal_entry_by_name:
+            existing_signal_entry_by_name[signal_name] = (int(entry_index), entry)
     existing_node_def_ids = h._collect_existing_node_def_ids(base_payload_root)
     existing_node_def_id_set = {int(v) for v in existing_node_def_ids if isinstance(v, int)}
 
@@ -844,8 +886,12 @@ def add_signals_to_gil(
         signal_name = str(spec.get("signal_name") or spec.get("name") or "").strip()
         if signal_name == "":
             raise ValueError("signal spec missing signal_name")
-        if signal_name in existing_signal_names:
-            continue
+
+        existing_signal_data = existing_signal_entry_by_name.get(signal_name)
+        existing_entry_index: int | None = None
+        existing_entry: Dict[str, Any] | None = None
+        if existing_signal_data is not None:
+            existing_entry_index, existing_entry = existing_signal_data
 
         params_value = spec.get("params") or []
         if not isinstance(params_value, list):
@@ -872,6 +918,16 @@ def add_signals_to_gil(
                 param_spec["dict_value_type_id"] = item.get("dict_value_type_id")
             params.append(param_spec)
 
+        requested_signature = [
+            (str(param["param_name"]), int(param["type_id"]))
+            for param in params
+        ]
+        old_signature = _extract_signal_signature(existing_entry) if isinstance(existing_entry, Mapping) else None
+        is_signature_update = existing_entry is not None and old_signature != requested_signature
+        if existing_entry is not None and not is_signature_update:
+            # Same name and exact ordered (parameter name, VarType) signature remains idempotent.
+            continue
+
         # 注意：即使 template 中存在同名信号，也不要整段克隆其 signal_index/node_def_id。
         # template 在这里仅用于结构模板与参数口样本（shape/template-mode）。
         template_entry = template_signal_entry_by_name.get(str(signal_name))
@@ -882,11 +938,23 @@ def add_signals_to_gil(
         server_node_def_id: int
         signal_index_int: int
 
-        send_node_def_id = int(next_node_def_id)
-        listen_node_def_id = int(next_node_def_id + 1)
-        server_node_def_id = int(next_node_def_id + 2)
-        next_node_def_id += 3
-        existing_node_def_id_set.update({send_node_def_id, listen_node_def_id, server_node_def_id})
+        if is_signature_update:
+            if not isinstance(existing_entry, Mapping):
+                raise RuntimeError(f"signal update lost existing entry: {signal_name!r}")
+            send_node_def_id, listen_node_def_id, server_node_def_id = _extract_signal_node_def_ids_from_entry(existing_entry)
+            signal_index_value = h._extract_nested_int(existing_entry, ["6"])
+            if not all(isinstance(value, int) for value in (send_node_def_id, listen_node_def_id, server_node_def_id, signal_index_value)):
+                raise ValueError(f"cannot update signal with incomplete IDs/index: {signal_name!r}")
+            send_node_def_id = int(send_node_def_id)
+            listen_node_def_id = int(listen_node_def_id)
+            server_node_def_id = int(server_node_def_id)
+            signal_index_int = int(signal_index_value)
+        else:
+            send_node_def_id = int(next_node_def_id)
+            listen_node_def_id = int(next_node_def_id + 1)
+            server_node_def_id = int(next_node_def_id + 2)
+            next_node_def_id += 3
+            existing_node_def_id_set.update({send_node_def_id, listen_node_def_id, server_node_def_id})
 
         # meta objects
         send_meta_dict = h._build_node_def_meta_dict(node_def_id_int=send_node_def_id, scope_code_int=20000)
@@ -911,7 +979,10 @@ def add_signals_to_gil(
             and int(param_count) == 0
             and int(preferred_signal_scope_prefix) in (0x60000000, 0x60800000)
         )
-        if is_bootstrap_placeholder_signal:
+        if is_signature_update:
+            # Existing ID/index identity is part of the signal binding contract; only ports are rebuilt.
+            pass
+        elif is_bootstrap_placeholder_signal:
             signal_index_int = 2
         else:
             if not isinstance(next_signal_index_int, int):
@@ -1082,17 +1153,6 @@ def add_signals_to_gil(
             server_param_port_texts=server_param_port_texts,
         )
 
-        # append node defs
-        node_defs_list.append({"1": new_send_def})
-        node_defs_list.append({"1": new_listen_def})
-        node_defs_list.append({"1": new_server_def})
-
-        # append meta index
-        node_def_meta_list.append(dict(send_meta_dict))
-        node_def_meta_list.append(dict(listen_meta_dict))
-        node_def_meta_list.append(dict(server_meta_dict))
-
-        # append signal entry
         new_signal_entry: Dict[str, Any] = {
             "1": dict(send_meta_dict),
             "2": dict(listen_meta_dict),
@@ -1102,21 +1162,430 @@ def add_signals_to_gil(
         }
         if signal_param_definition_texts:
             new_signal_entry["4"] = list(signal_param_definition_texts)
-        signal_entry_list.append(new_signal_entry)
+
+        if is_signature_update:
+            # Replace only the three role definitions addressed by this entry. Their IDs and the
+            # signal index stay stable; all unrelated node definitions and graph/UI data stay intact.
+            for role_id, replacement, role_meta in (
+                (send_node_def_id, new_send_def, send_meta_dict),
+                (listen_node_def_id, new_listen_def, listen_meta_dict),
+                (server_node_def_id, new_server_def, server_meta_dict),
+            ):
+                existing_def = base_node_defs_by_id.get(int(role_id))
+                if isinstance(existing_def, dict):
+                    existing_def.clear()
+                    existing_def.update(copy.deepcopy(replacement))
+                else:
+                    node_defs_list.append({"1": copy.deepcopy(replacement)})
+                    base_node_defs_by_id[int(role_id)] = node_defs_list[-1]["1"]
+
+                role_meta_present = False
+                for existing_meta in node_def_meta_list:
+                    if not isinstance(existing_meta, Mapping):
+                        continue
+                    existing_meta_id = existing_meta.get("5")
+                    if not isinstance(existing_meta_id, int):
+                        existing_meta_id = existing_meta.get("field_5")
+                    if isinstance(existing_meta_id, int) and int(existing_meta_id) == int(role_id):
+                        role_meta_present = True
+                        break
+                if not role_meta_present:
+                    node_def_meta_list.append(dict(role_meta))
+
+            # Preserve unknown entry fields while replacing the canonical signature and role metadata.
+            updated_entry = dict(existing_entry or {})
+            updated_entry.update(new_signal_entry)
+            if not signal_param_definition_texts:
+                updated_entry.pop("4", None)
+            if not isinstance(existing_entry_index, int):
+                raise RuntimeError(f"signal update has no entry index: {signal_name!r}")
+            signal_entry_list[int(existing_entry_index)] = updated_entry
+            existing_signal_entry_by_name[signal_name] = (int(existing_entry_index), updated_entry)
+            updated_params_by_name[signal_name] = copy.deepcopy(params)
+            updated_signals.append(
+                {
+                    "signal_name": signal_name,
+                    "signal_index_int": int(signal_index_int),
+                    "node_def_ids": {
+                        "send": int(send_node_def_id),
+                        "listen": int(listen_node_def_id),
+                        "send_to_server": int(server_node_def_id),
+                    },
+                    "old_params": [
+                        {"param_name": name, "type_id": type_id}
+                        for name, type_id in (old_signature or [])
+                    ],
+                    "params": allocated_params,
+                }
+            )
+        else:
+            # append node defs
+            node_defs_list.append({"1": new_send_def})
+            node_defs_list.append({"1": new_listen_def})
+            node_defs_list.append({"1": new_server_def})
+
+            # append meta index
+            node_def_meta_list.append(dict(send_meta_dict))
+            node_def_meta_list.append(dict(listen_meta_dict))
+            node_def_meta_list.append(dict(server_meta_dict))
+
+            # append signal entry
+            signal_entry_list.append(new_signal_entry)
+            existing_signal_entry_by_name[signal_name] = (len(signal_entry_list) - 1, new_signal_entry)
 
         existing_signal_names.add(signal_name)
-        added_signals.append(
-            {
-                "signal_name": signal_name,
-                "signal_index_int": signal_index_int,
-                "node_def_ids": {
-                    "send": send_node_def_id,
-                    "listen": listen_node_def_id,
-                    "send_to_server": server_node_def_id,
-                },
-                "params": allocated_params,
-            }
+        if not is_signature_update:
+            added_signals.append(
+                {
+                    "signal_name": signal_name,
+                    "signal_index_int": signal_index_int,
+                    "node_def_ids": {
+                        "send": send_node_def_id,
+                        "listen": listen_node_def_id,
+                        "send_to_server": server_node_def_id,
+                    },
+                    "params": allocated_params,
+                }
+            )
+
+    # ===== 信号 node_def 收敛：清理不再被信号表引用的孤儿定义 + 为缺失信号补“发送客户端脚本信号”定义 =====
+    #
+    # 背景：
+    # - 现有信号自愈清理会按 signal_index/signal_name 去重，把占位信号（如 信号_1..5）从 signal entries 中剔除；
+    # - 但 node_def 列表只增不减，被剔除信号的 node_def 会残留成“编辑器信号选择器里还能看到、但信号表里没有”的孤儿；
+    # - 另外，“发送客户端脚本信号”(客户端通道) 的 node_def 不会在新增信号时自动生成，导致 300005 节点无法解析信号名。
+    from . import gia_export as _gia_export
+    from .gia_export import _build_param_item_message_from_param_spec as _build_client_param_item
+
+    final_role_ids: set[int] = set()
+    final_signal_names: set[str] = set()
+    final_signal_index_by_name: Dict[str, int] = {}
+    meta_by_signal_name: Dict[str, tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]] = {}
+    for entry in list(signal_entry_list):
+        if not isinstance(entry, Mapping):
+            continue
+        name = str(entry.get("3") or "").strip()
+        if name == "":
+            continue
+        final_signal_names.add(str(name))
+        signal_index_value = h._extract_nested_int(entry, ["6"])
+        if isinstance(signal_index_value, int):
+            final_signal_index_by_name[str(name)] = int(signal_index_value)
+        send_id, listen_id, server_id = _extract_signal_node_def_ids_from_entry(entry)
+        for role_id in (send_id, listen_id, server_id):
+            if isinstance(role_id, int):
+                final_role_ids.add(int(role_id))
+        send_meta = entry.get("1")
+        listen_meta = entry.get("2")
+        server_meta = _decode_server_meta_from_entry(entry)
+        if isinstance(send_meta, Mapping) and isinstance(listen_meta, Mapping) and isinstance(server_meta, Mapping):
+            meta_by_signal_name[str(name)] = (dict(send_meta), dict(listen_meta), dict(server_meta))
+
+    kept_node_defs: List[Any] = []
+    dropped_node_def_ids: set[int] = set()
+    existing_client_send_ids: List[int] = []
+    client_signals_present: set[str] = set()
+
+    # 浅层 dump 下 node_def['4']['1'] 可能是 <binary_data>，无法直接走 _extract_nested_int；
+    # section5/2 的 meta 索引与 wrappers 一一对应时，优先用位置对齐取 node_def_id。
+    node_def_id_by_index: Dict[int, int] = {}
+    if len(node_def_meta_list) == len(node_defs_list):
+        for _index, _meta_item in enumerate(list(node_def_meta_list)):
+            if not isinstance(_meta_item, Mapping):
+                continue
+            _node_def_id = _meta_item.get("5")
+            if not isinstance(_node_def_id, int):
+                _node_def_id = _meta_item.get("field_5")
+            if isinstance(_node_def_id, int):
+                node_def_id_by_index[int(_index)] = int(_node_def_id)
+
+    def _resolve_node_def_id(*, index: int, node_def_obj: Mapping[str, Any]) -> Optional[int]:
+        meta_value = node_def_obj.get("4")
+        if isinstance(meta_value, str) and meta_value.startswith("<binary_data>"):
+            decoded_meta = binary_data_text_to_numeric_message(meta_value)
+            if isinstance(decoded_meta, Mapping):
+                meta_value = decoded_meta
+        inner_meta = meta_value.get("1") if isinstance(meta_value, Mapping) else None
+        if isinstance(inner_meta, str) and inner_meta.startswith("<binary_data>"):
+            inner_meta = binary_data_text_to_numeric_message(inner_meta)
+        embedded_id = h._extract_nested_int(inner_meta, ["5"])
+        if not isinstance(embedded_id, int):
+            embedded_id = h._extract_nested_int(inner_meta, ["field_5"])
+        if isinstance(embedded_id, int):
+            return int(embedded_id)
+        indexed_id = node_def_id_by_index.get(int(index))
+        return int(indexed_id) if isinstance(indexed_id, int) else None
+
+    def _resolve_client_signal_name(node_def_obj: Mapping[str, Any]) -> str:
+        sig_value = node_def_obj.get("107")
+        binding_value = sig_value.get("108") if isinstance(sig_value, Mapping) else None
+        if isinstance(binding_value, str) and binding_value.startswith("<binary_data>"):
+            decoded_binding = binary_data_text_to_numeric_message(binding_value)
+            if isinstance(decoded_binding, Mapping):
+                binding_value = decoded_binding
+        if isinstance(binding_value, Mapping):
+            name_value = binding_value.get("1")
+            if isinstance(name_value, str):
+                return str(name_value).strip()
+        return ""
+
+    def _alloc_client_ports(width: int) -> int:
+        nonlocal next_port_index
+        block = int(next_port_index)
+        while any((block + i) in used_ports for i in range(int(width))):
+            block += 1
+        for i in range(int(width)):
+            used_ports.add(int(block + i))
+        next_port_index = int(block) + int(width)
+        return int(block)
+
+    for wrapper_index, wrapper in enumerate(list(node_defs_list)):
+        node_def_obj = wrapper.get("1") if isinstance(wrapper, Mapping) else None
+        if not isinstance(node_def_obj, dict):
+            kept_node_defs.append(wrapper)
+            continue
+        title = str(node_def_obj.get("200") or "").strip()
+        node_def_id_int = _resolve_node_def_id(index=int(wrapper_index), node_def_obj=node_def_obj)
+        if title in {"发送信号", "监听信号", "向服务器节点图发送信号"}:
+            if isinstance(node_def_id_int, int) and int(node_def_id_int) in final_role_ids:
+                kept_node_defs.append(wrapper)
+            elif isinstance(node_def_id_int, int):
+                dropped_node_def_ids.add(int(node_def_id_int))
+            continue
+        if title == "发送客户端脚本信号":
+            signal_name = _resolve_client_signal_name(node_def_obj)
+            if isinstance(node_def_id_int, int):
+                existing_client_send_ids.append(int(node_def_id_int))
+            if signal_name != "" and signal_name in final_signal_names:
+                if signal_name in updated_params_by_name:
+                    signal_metas = meta_by_signal_name.get(str(signal_name))
+                    if not isinstance(signal_metas, tuple) or not isinstance(node_def_id_int, int):
+                        raise ValueError(f"cannot rebuild client-send definition for updated signal {signal_name!r}")
+                    send_meta, listen_meta, server_meta = signal_metas
+                    params = list(updated_params_by_name[str(signal_name)])
+                    client_port_block = _alloc_client_ports(4 + len(params))
+                    client_signal_index = h._extract_nested_int(node_def_obj, ["4", "5"])
+                    if not isinstance(client_signal_index, int):
+                        client_signal_index = final_signal_index_by_name.get(str(signal_name))
+                    if not isinstance(client_signal_index, int):
+                        raise ValueError(f"client-send definition has no signal index for {signal_name!r}")
+
+                    client_param_items: List[Dict[str, Any]] = [
+                        {
+                            "1": "目标玩家",
+                            "2": 1,
+                            "3": {"1": 3},
+                            "4": {"3": 1, "4": 1},
+                            "8": int(client_port_block + 3),
+                        }
+                    ]
+                    for param_ordinal, param in enumerate(params):
+                        client_param_items.append(
+                            _build_client_param_item(
+                                param_spec=param,
+                                port_index_int=int(client_port_block + 4 + param_ordinal),
+                                param_ordinal_int=int(param_ordinal) + 1,
+                                for_server_node=False,
+                            )
+                        )
+
+                    client_def_for_rebuild = copy.deepcopy(node_def_obj)
+                    client_meta = client_def_for_rebuild.get("4")
+                    if isinstance(client_meta, str) and client_meta.startswith("<binary_data>"):
+                        decoded_client_meta = binary_data_text_to_numeric_message(client_meta)
+                        if isinstance(decoded_client_meta, Mapping):
+                            client_meta = dict(decoded_client_meta)
+                            client_def_for_rebuild["4"] = client_meta
+                    if isinstance(client_meta, dict):
+                        h._ensure_path_dict_allow_binary(client_meta, "1")
+                        h._ensure_path_dict_allow_binary(client_meta, "2")
+                    h._ensure_path_dict_allow_binary(client_def_for_rebuild, "106")
+                    client_signal_name_port = client_def_for_rebuild.get("106")
+                    if isinstance(client_signal_name_port, dict):
+                        h._ensure_path_dict_allow_binary(client_signal_name_port, "4")
+                    h._ensure_path_dict_allow_binary(client_def_for_rebuild, "107")
+                    client_signal_binding = client_def_for_rebuild.get("107")
+                    if isinstance(client_signal_binding, dict):
+                        h._ensure_path_dict_allow_binary(client_signal_binding, "108")
+
+                    rebuilt_client_def = _gia_export._reset_client_send_node_def_for_new_signal(
+                        node_def=client_def_for_rebuild,
+                        signal_index_int=int(client_signal_index),
+                        node_def_id_int=int(node_def_id_int),
+                        signal_name=str(signal_name),
+                        send_meta_dict=dict(send_meta),
+                        listen_meta_dict=dict(listen_meta),
+                        server_meta_dict=dict(server_meta),
+                        flow_in_port_index=int(client_port_block),
+                        flow_out_port_index=int(client_port_block + 1),
+                        signal_name_port_index=int(client_port_block + 2),
+                        target_player_port_index=int(client_port_block + 3),
+                        client_param_items=client_param_items,
+                    )
+                    node_def_obj.clear()
+                    node_def_obj.update(rebuilt_client_def)
+                kept_node_defs.append(wrapper)
+                client_signals_present.add(str(signal_name))
+            elif isinstance(node_def_id_int, int):
+                dropped_node_def_ids.add(int(node_def_id_int))
+            continue
+        kept_node_defs.append(wrapper)
+
+    node_defs_list[:] = kept_node_defs
+
+    # 同步清理 signal meta 索引中属于被删定义的条目
+    if dropped_node_def_ids:
+        node_def_meta_list[:] = [
+            item
+            for item in list(node_def_meta_list)
+            if not (
+                isinstance(item, Mapping)
+                and isinstance(h._extract_nested_int(item, ["5"]), int)
+                and int(h._extract_nested_int(item, ["5"])) in dropped_node_def_ids
+            )
+        ]
+
+    # 为缺少客户端发送定义的信号补齐 node_def（按信号名稳定排序，保证可复现）
+    signal_params_by_name: Dict[str, List[Dict[str, Any]]] = {}
+    for _spec in list(signal_specs):
+        if not isinstance(_spec, Mapping):
+            continue
+        _name = str(_spec.get("signal_name") or _spec.get("name") or "").strip()
+        if _name == "":
+            continue
+        _params: List[Dict[str, Any]] = []
+        for _item in list(_spec.get("params") or []):
+            if not isinstance(_item, Mapping):
+                continue
+            _pn = str(_item.get("param_name") or _item.get("name") or "").strip()
+            if _pn == "":
+                continue
+            try:
+                _pt = int(h._parse_type_id(_item.get("type_id") if "type_id" in _item else _item.get("type")))
+            except Exception:
+                continue
+            _params.append({"param_name": str(_pn), "type_id": int(_pt)})
+        signal_params_by_name[str(_name)] = _params
+
+    missing_client_signal_names = sorted(
+        [n for n in final_signal_names if n not in client_signals_present],
+        key=lambda text: str(text).casefold(),
+    )
+    if missing_client_signal_names:
+        next_client_send_id = (
+            int(max(existing_client_send_ids)) + 1
+            if existing_client_send_ids
+            else 0x60000001
         )
+
+        for _signal_name in missing_client_signal_names:
+            _metas = meta_by_signal_name.get(str(_signal_name))
+            if not isinstance(_metas, tuple):
+                continue
+            _entry_signal_index = final_signal_index_by_name.get(str(_signal_name))
+            if not isinstance(_entry_signal_index, int):
+                raise ValueError(f"cannot assign client index without signal entry index for {_signal_name!r}")
+            _client_signal_index = int(_entry_signal_index) + 1
+            _send_meta, _listen_meta, _server_meta = _metas
+            _params = list(signal_params_by_name.get(str(_signal_name)) or [])
+            _block = _alloc_client_ports(4 + len(_params))
+            _flow_in = int(_block + 0)
+            _flow_out = int(_block + 1)
+            _signal_name_port = int(_block + 2)
+            _target_player_port = int(_block + 3)
+            _param_port_indices = [int(_block + 4 + i) for i in range(len(_params))]
+
+            _client_send_id = int(next_client_send_id)
+            next_client_send_id += 1
+
+            _param_items: List[Dict[str, Any]] = [
+                {
+                    "1": "目标玩家",
+                    "2": 1,
+                    "3": {"1": 3},
+                    "4": {"3": 1, "4": 1},
+                    "8": int(_target_player_port),
+                }
+            ]
+            for _ordinal, _param in enumerate(_params):
+                _param_items.append(
+                    _build_client_param_item(
+                        param_spec=_param,
+                        port_index_int=int(_param_port_indices[_ordinal]),
+                        param_ordinal_int=int(_ordinal) + 1,
+                        for_server_node=False,
+                    )
+                )
+
+            _node_def_id = int(_client_send_id)
+            _node_def: Dict[str, Any] = {
+                "4": {
+                    "1": {"1": 10001, "2": 20000, "3": 22001, "5": int(_node_def_id)},
+                    "2": {"1": 10001, "2": 20000, "3": 22001, "5": int(_node_def_id)},
+                    "4": numeric_message_to_binary_data_text({}),
+                    "5": int(_client_signal_index),
+                },
+                "100": {
+                    "2": 1,
+                    "3": {"1": 1},
+                    "4": numeric_message_to_binary_data_text({}),
+                    "8": int(_flow_in),
+                },
+                "101": {
+                    "2": 1,
+                    "3": {"1": 2},
+                    "4": numeric_message_to_binary_data_text({}),
+                    "8": int(_flow_out),
+                },
+                "102": list(_param_items),
+                "106": {
+                    "1": "信号名",
+                    "4": {
+                        "1": 5,
+                        "2": {
+                            "1": 5,
+                            "2": 1,
+                            "4": {"1": 1, "100": numeric_message_to_binary_data_text({})},
+                            "105": {"1": str(_signal_name)},
+                        },
+                        "6": 1,
+                        "7": {"1": 4},
+                    },
+                    "5": {"1": 6, "2": 1},
+                    "8": int(_signal_name_port),
+                },
+                "107": {
+                    "1": 1006,
+                    "108": {
+                        "1": str(_signal_name),
+                        "2": dict(_send_meta),
+                        "3": dict(_server_meta),
+                        "4": dict(_listen_meta),
+                    },
+                },
+                "200": "发送客户端脚本信号",
+                "203": 1,
+                "204": 8,
+            }
+            node_defs_list.append({"1": _node_def})
+            node_def_meta_list.append({"1": 10001, "2": 20000, "3": 22001, "5": int(_node_def_id)})
+            added_signals.append(
+                {
+                    "signal_name": str(_signal_name),
+                    "client_send_node_def_id": int(_node_def_id),
+                    "client_send_ports": {
+                        "flow_in": int(_flow_in),
+                        "flow_out": int(_flow_out),
+                        "signal_name": int(_signal_name_port),
+                        "target_player": int(_target_player_port),
+                        "params": list(_param_port_indices),
+                    },
+                }
+            )
+
+    # Client-send definitions have now been created or migrated, so repair the full
+    # signal registry in one pass before serializing the section.
+    registry_repairs = repair_signal_registry(signal_entry_list, node_defs_list)
 
     # ===== 写盘：wire-level 仅替换必要段（field10=NodeGraphs/Signals），避免整份 payload 重编码漂移 =====
     section10_obj = base_payload_root.get("10")
@@ -1161,6 +1630,8 @@ def add_signals_to_gil(
         "spec_json": str(Path(spec_json_path).resolve()),
         "output_gil": str(output_path),
         "added_signals": added_signals,
+        "updated_signals": updated_signals,
+        "registry_repairs": registry_repairs,
         "sanitized_existing_signals": list(sanitized_existing_signals),
     }
 

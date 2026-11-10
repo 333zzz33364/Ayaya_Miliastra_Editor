@@ -53,9 +53,9 @@ def _write_or_patch_signal_meta_pin_record(
     has_source_ref = bool(isinstance(source_ref_node_def_id_int, int) and int(source_ref_node_def_id_int) >= 0x40000000)
 
     index_msg: Dict[str, Any] = {"1": 5}
-    # 对齐 GIA meta binding：META pin 必须携带 source_ref(field_100)，用于绑定 signal-specific runtime_id 与端口块解释。
-    # 注意：即便节点 runtime 已切换为 signal-specific（0x4000xxxx），写回侧仍显式写入 source_ref，以避免导入后端口错位/串号。
-    if bool(has_source_ref):
+    # GIL 的专属节点已通过 NodeProperty 绑定定义；编辑器保存的存档5会移除
+    # META Index.field100。仅通用节点需要额外引用，不能照搬 GIA 的绑定方式。
+    if bool(has_source_ref) and not node_runtime_is_signal_specific:
         index_msg["100"] = {"1": int(source_ref_node_def_id_int)}
 
     meta_msg: Dict[str, Any] = {
