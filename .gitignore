@@ -30,8 +30,13 @@ env/
 Thumbs.db
 .DS_Store
 
-# ---------- tests（不对外仓库上传） ----------
+# ---------- tests（回归测试入库；仅忽略缓存与字节码） ----------
 tests/**
+!tests/**/
+!tests/**/*.py
+!tests/**/*.md
+!tests/**/*.json
+!tests/**/*.html
 
 # Jupyter notebooks（只在本地使用，不进仓库）
 *.ipynb
