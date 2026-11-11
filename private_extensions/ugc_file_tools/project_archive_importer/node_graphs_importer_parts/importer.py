@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -433,6 +434,7 @@ def import_node_graphs_from_project_archive_to_gil(
 
     total_specs = len(specs)
     for idx, spec in enumerate(specs):
+        graph_started_at = time.perf_counter()
         if progress_cb is not None:
             progress_cb(f"[{idx+1}/{total_specs}] {spec.graph_code_file.name}")
 
@@ -462,6 +464,7 @@ def import_node_graphs_from_project_archive_to_gil(
             )
             continue
 
+        export_started_at = time.perf_counter()
         try:
             export_report = export_graph_model_json_from_graph_code_with_context(
                 ctx=gg_ctx,
@@ -489,6 +492,7 @@ def import_node_graphs_from_project_archive_to_gil(
                 }
             )
             continue
+        export_sec = float(time.perf_counter() - export_started_at)
         graph_name_for_match = str(export_report.get("graph_name") or spec.graph_name_hint or "").strip()
         new_graph_name_for_write = str(export_report.get("graph_name") or spec.graph_name_hint or spec.graph_key)
 
@@ -547,6 +551,7 @@ def import_node_graphs_from_project_archive_to_gil(
             else:
                 requested_graph_id_for_write = None
 
+        writeback_started_at = time.perf_counter()
         applied = apply_graph_model_json_template_clone_inplace(
             ctx=batch_ctx,
             graph_model_json_path=Path(export_report["output_json"]),
@@ -641,6 +646,10 @@ def import_node_graphs_from_project_archive_to_gil(
                 ),
                 "written_graph_id_int": int(written_graph_id_int),
                 "write_report": dict(write_report),
+                "export_sec": float(export_sec),
+                "writeback_sec": float(time.perf_counter() - writeback_started_at),
+                "total_sec": float(time.perf_counter() - graph_started_at),
+                "incremental_cache_hit": bool(export_report.get("incremental_cache_hit")),
             }
         )
     if reports:

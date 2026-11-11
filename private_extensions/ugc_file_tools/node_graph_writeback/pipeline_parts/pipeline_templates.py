@@ -18,12 +18,29 @@ class _TemplateGraphSample:
     template_node_id_set: set[int]
 
 
+# 批处理时同一份模板 `.gil` 会被每张图重复解码（数秒级开销），这里按“路径 + mtime + size”做进程级复用。
+_TEMPLATE_DUMP_CACHE: Dict[Tuple[str, int, int], Dict[str, Any]] = {}
+
+
+def _load_template_dump_cached(template_gil_path: Path) -> Dict[str, Any]:
+    path = Path(template_gil_path).resolve()
+    stat = path.stat()
+    key = (str(path), int(stat.st_mtime_ns), int(stat.st_size))
+    cached = _TEMPLATE_DUMP_CACHE.get(key)
+    if cached is not None:
+        return cached
+    dump = _dump_gil_to_raw_json_object(path)
+    _TEMPLATE_DUMP_CACHE.clear()
+    _TEMPLATE_DUMP_CACHE[key] = dump
+    return dump
+
+
 def _load_template_graph_sample_or_raise(
     *,
     template_gil_path: Path,
     template_graph_id_int: int,
 ) -> _TemplateGraphSample:
-    template_raw_dump_object = _dump_gil_to_raw_json_object(Path(template_gil_path))
+    template_raw_dump_object = _load_template_dump_cached(Path(template_gil_path))
     template_payload_root = _get_payload_root(template_raw_dump_object)
 
     template_section = template_payload_root.get("10")

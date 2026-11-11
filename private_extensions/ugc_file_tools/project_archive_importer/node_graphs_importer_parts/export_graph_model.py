@@ -6,9 +6,21 @@ from typing import Any, Dict
 
 from ugc_file_tools.graph.node_graph.pos_scale import ensure_positive_finite_node_pos_scale, set_node_pos_scale_in_graph_json
 from ugc_file_tools.graph.port_types import enrich_graph_model_with_port_types
+from ugc_file_tools.incremental_cache import (
+    compute_export_fingerprint,
+    load_cached_graph_model_export,
+    save_cached_graph_model_export,
+)
 from ugc_file_tools.output_paths import resolve_output_file_path_in_out_dir
 
 from .gg_context import _GGContext
+
+
+def _write_graph_model_json(*, output_payload: Dict[str, Any], output_json_file: Path) -> Path:
+    output_path = resolve_output_file_path_in_out_dir(Path(output_json_file))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(output_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return output_path
 
 
 def _export_graph_model_json_from_graph_code_with_context(
@@ -19,10 +31,42 @@ def _export_graph_model_json_from_graph_code_with_context(
     ui_export_record_id: str | None = None,
     ui_guid_registry_snapshot_path: Path | None = None,
     node_pos_scale: float | None = None,
+    use_incremental_cache: bool = True,
 ) -> Dict[str, Any]:
     code_path = Path(graph_code_file).resolve()
     if not code_path.is_file():
         raise FileNotFoundError(str(code_path))
+
+    fingerprint = ""
+    if bool(use_incremental_cache):
+        fingerprint = compute_export_fingerprint(
+            workspace_root=Path(ctx.workspace_root),
+            graph_code_file=code_path,
+            node_pos_scale=node_pos_scale,
+            ui_export_record_id=ui_export_record_id,
+            ui_guid_registry_snapshot_path=ui_guid_registry_snapshot_path,
+            active_package_id=str(ctx.package_id or ""),
+        )
+        cached_payload = load_cached_graph_model_export(
+            workspace_root=Path(ctx.workspace_root),
+            fingerprint=fingerprint,
+        )
+        if isinstance(cached_payload, dict) and cached_payload:
+            output_path = _write_graph_model_json(output_payload=cached_payload, output_json_file=output_json_file)
+            data_obj = cached_payload.get("data")
+            nodes_obj = data_obj.get("nodes") if isinstance(data_obj, dict) else None
+            edges_obj = data_obj.get("edges") if isinstance(data_obj, dict) else None
+            return {
+                "graph_code_file": str(code_path),
+                "output_json": str(output_path),
+                "graph_name": str(cached_payload.get("name") or ""),
+                "graph_id": str(cached_payload.get("graph_id") or ""),
+                "active_package_id": str(ctx.package_id or ""),
+                "nodes_count": (len(nodes_obj) if isinstance(nodes_obj, list) else None),
+                "edges_count": (len(edges_obj) if isinstance(edges_obj, list) else None),
+                "incremental_cache_hit": True,
+                "incremental_fingerprint": fingerprint,
+            }
 
     graph_meta = ctx.load_graph_metadata_from_file(code_path)
     graph_id = str(getattr(graph_meta, "graph_id", "") or "").strip()
@@ -85,9 +129,14 @@ def _export_graph_model_json_from_graph_code_with_context(
     if ui_guid_registry_snapshot_path is not None:
         output_payload["ui_guid_registry_snapshot_path"] = str(Path(ui_guid_registry_snapshot_path).resolve())
 
-    output_path = resolve_output_file_path_in_out_dir(Path(output_json_file))
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(output_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    output_path = _write_graph_model_json(output_payload=output_payload, output_json_file=output_json_file)
+
+    if fingerprint:
+        save_cached_graph_model_export(
+            workspace_root=Path(ctx.workspace_root),
+            fingerprint=fingerprint,
+            output_payload=output_payload,
+        )
 
     return {
         "graph_code_file": str(code_path),
@@ -97,6 +146,8 @@ def _export_graph_model_json_from_graph_code_with_context(
         "active_package_id": str(ctx.package_id or ""),
         "nodes_count": len(getattr(graph_model, "nodes", {}) or {}),
         "edges_count": len(getattr(graph_model, "edges", {}) or {}),
+        "incremental_cache_hit": False,
+        "incremental_fingerprint": fingerprint,
     }
 
 
@@ -108,6 +159,7 @@ def export_graph_model_json_from_graph_code_with_context(
     ui_export_record_id: str | None = None,
     ui_guid_registry_snapshot_path: Path | None = None,
     node_pos_scale: float | None = None,
+    use_incremental_cache: bool = True,
 ) -> Dict[str, Any]:
     return _export_graph_model_json_from_graph_code_with_context(
         ctx=ctx,
@@ -116,5 +168,6 @@ def export_graph_model_json_from_graph_code_with_context(
         ui_export_record_id=ui_export_record_id,
         ui_guid_registry_snapshot_path=ui_guid_registry_snapshot_path,
         node_pos_scale=node_pos_scale,
+        use_incremental_cache=use_incremental_cache,
     )
 
