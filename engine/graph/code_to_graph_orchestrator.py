@@ -46,6 +46,20 @@ from engine.graph.semantic import SEMANTIC_SIGNAL_ID_CONSTANT_KEY
 from importlib import import_module
 
 
+def _apply_optimize_passes(graph_model: GraphModel, node_library: Dict[str, NodeDef] | None = None) -> None:
+    """执行编译期优化 pass（全部默认关闭）。
+
+    报告写入 `graph_model.metadata["optimize_report"]`，便于导出侧与回归对比节点/连边数。
+    """
+    from engine.graph.optimize import apply_graph_optimizations, options_from_settings
+
+    options = options_from_settings()
+    if not options.any_enabled:
+        return
+    report = apply_graph_optimizations(graph_model, options, node_library=node_library)
+    graph_model.metadata["optimize_report"] = report
+
+
 class CodeToGraphParser:
     def __init__(
         self,
@@ -264,6 +278,9 @@ class CodeToGraphParser:
             graph_model.metadata["ir_warnings"] = list(self._validators.warnings or [])
         if getattr(self._validators, "errors", None):
             graph_model.metadata["ir_errors"] = list(self._validators.errors or [])
+
+        # 编译期优化 pass（默认全关；在布局之前执行，避免产生孤立坐标/基本块脏数据）
+        _apply_optimize_passes(graph_model, node_library=self.node_library)
 
         # 布局（调用点保持不变）
         apply_layout_quietly(graph_model, workspace_path=self.workspace_path)

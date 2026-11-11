@@ -104,7 +104,7 @@ class GraphCacheFacade:
     @staticmethod
     def current_layout_settings_snapshot() -> dict:
         """获取与布局结果相关的全局设置快照（跨块复制、紧凑排列、布局算法版本等）。"""
-        return {
+        snapshot = {
             "DATA_NODE_CROSS_BLOCK_COPY": bool(getattr(settings, "DATA_NODE_CROSS_BLOCK_COPY", True)),
             # 长连线中转（获取局部变量）节点：属于“结构增强”，必须纳入快照以确保切换开关/阈值后不误命中旧缓存。
             "LAYOUT_AUTO_INSERT_LOCAL_VAR_RELAY": bool(getattr(settings, "LAYOUT_AUTO_INSERT_LOCAL_VAR_RELAY", False)),
@@ -120,6 +120,17 @@ class GraphCacheFacade:
             # 布局算法版本号：用于在跨块复制/块归属等布局语义发生变更时主动失效旧缓存。
             "LAYOUT_ALGO_VERSION": int(getattr(settings, "LAYOUT_ALGO_VERSION", 1)),
         }
+        # 编译期优化 pass 会改变节点/连边结构，必须纳入快照，否则切换开关会误命中旧缓存。
+        # 仅在任一 pass 开启时才写入这几个键：默认全关时快照保持原样，避免让已有缓存整体失效。
+        optimize_flags = {
+            "GRAPH_OPTIMIZE_CONSTANT_FOLD": bool(getattr(settings, "GRAPH_OPTIMIZE_CONSTANT_FOLD", False)),
+            "GRAPH_OPTIMIZE_DEAD_CODE": bool(getattr(settings, "GRAPH_OPTIMIZE_DEAD_CODE", False)),
+            "GRAPH_OPTIMIZE_LOCAL_VAR_REUSE": bool(getattr(settings, "GRAPH_OPTIMIZE_LOCAL_VAR_REUSE", False)),
+            "GRAPH_OPTIMIZE_TIMER_POOLING": bool(getattr(settings, "GRAPH_OPTIMIZE_TIMER_POOLING", False)),
+        }
+        if any(optimize_flags.values()):
+            snapshot.update(optimize_flags)
+        return snapshot
 
     def is_persistent_layout_settings_compatible(self, persisted_result_data: dict) -> bool:
         """检查持久化缓存中的布局设置快照是否与当前全局设置兼容。"""
@@ -133,6 +144,12 @@ class GraphCacheFacade:
             return False
 
         current_snapshot = self.current_layout_settings_snapshot()
+        # 反向检查：缓存里有优化 pass 键、当前却全关时，缓存里的图是“优化过的”，不能复用。
+        for key in list(cached_settings.keys()):
+            if not str(key).startswith("GRAPH_OPTIMIZE_"):
+                continue
+            if key not in current_snapshot:
+                return False
         for key, current_value in current_snapshot.items():
             cached_value = cached_settings.get(key)
             if isinstance(current_value, bool):

@@ -233,6 +233,14 @@ class Settings:
     # 布局算法版本号：当跨块复制或块归属等布局语义发生不兼容变更时递增，
     # 用于让旧的 graph_cache 在加载节点图时失效并触发重新解析与自动布局。
     LAYOUT_ALGO_VERSION: int = 2
+
+    # ========== 编译期优化 pass（engine/graph/optimize）==========
+    # 全部默认关闭：开启后会改变图的节点/连边结构，必须逐项目回归后再启用。
+    # 每个开关独立生效，插入点在 IR 解析之后、自动布局之前。
+    GRAPH_OPTIMIZE_CONSTANT_FOLD: bool = False
+    GRAPH_OPTIMIZE_DEAD_CODE: bool = False
+    GRAPH_OPTIMIZE_LOCAL_VAR_REUSE: bool = False
+    GRAPH_OPTIMIZE_TIMER_POOLING: bool = False
     
     # ========== 布局性能优化（方案C + D）==========
     
@@ -620,6 +628,10 @@ class Settings:
         cls.DATA_NODE_CROSS_BLOCK_COPY = True
         cls.LAYOUT_AUTO_INSERT_LOCAL_VAR_RELAY = False
         cls.LAYOUT_LOCAL_VAR_RELAY_MAX_BLOCK_DISTANCE = 5
+        cls.GRAPH_OPTIMIZE_CONSTANT_FOLD = False
+        cls.GRAPH_OPTIMIZE_DEAD_CODE = False
+        cls.GRAPH_OPTIMIZE_LOCAL_VAR_REUSE = False
+        cls.GRAPH_OPTIMIZE_TIMER_POOLING = False
         cls.SHOW_BASIC_BLOCKS = True
         cls.BASIC_BLOCK_ALPHA = 0.2
         cls.SHOW_LAYOUT_Y_DEBUG = False
