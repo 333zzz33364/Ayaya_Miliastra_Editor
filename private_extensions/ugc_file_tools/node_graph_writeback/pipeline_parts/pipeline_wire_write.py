@@ -21,6 +21,18 @@ def write_patched_gil_by_sections_and_return_output_path(
     payload_root: Dict[str, Any],
     include_section5: bool,
 ) -> Path:
+    # ===== 写盘前硬校验：不满足不变量时直接拒绝写盘（可用 UGC_WB_DISABLE=preflight 临时关闭）=====
+    from ugc_file_tools.writeback_preflight import (
+        read_section10_field7_from_gil,
+        run_writeback_preflight_or_raise,
+    )
+
+    run_writeback_preflight_or_raise(
+        payload_root=payload_root,
+        base_section10_field7=read_section10_field7_from_gil(Path(effective_base_gil_path)),
+        context=f"node_graph_writeback -> {Path(output_gil_path).name}",
+    )
+
     # ===== 写盘：wire-level 仅替换必要段（默认仅 field10=NodeGraphs），避免整份 payload 重编码漂移 =====
     section10_obj = payload_root.get("10")
     if not isinstance(section10_obj, dict):

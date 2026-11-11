@@ -3,6 +3,7 @@
 
 ## 当前状态
 - `writer.py`：对外核心接口 `add_signals_to_gil(...)`（业务主流程编排：模板/参数→payload 追加→wire-level 写回；只替换 `payload_root.field_10`，其余段 bytes 保真）。
+  - 写盘前调用 `ugc_file_tools/writeback_preflight.py` 做不变量硬校验（失败拒绝写盘；`UGC_WB_DISABLE=preflight` 可临时关闭）。
   - `template_gil` 可选：未提供时会按 `base → bootstrap → 内置默认模板` 自动选择包含“无参数信号”的 node_def 样本作为基底。
   - 会将“无参数信号”的 3 个 node_def 样本自动沉淀到本地缓存（`_signal_node_def_templates.cache.json`），用于在缺少模板文件时兜底复用。
   - 参数口构建：`param_build_mode=semantic/template`（semantic 为推荐默认；template 需要模板覆盖参数类型样本）。

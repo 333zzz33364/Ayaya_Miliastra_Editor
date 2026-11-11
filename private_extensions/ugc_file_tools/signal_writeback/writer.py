@@ -1587,6 +1587,18 @@ def add_signals_to_gil(
     # signal registry in one pass before serializing the section.
     registry_repairs = repair_signal_registry(signal_entry_list, node_defs_list)
 
+    # ===== 写盘前硬校验：不满足不变量时直接拒绝写盘（可用 UGC_WB_DISABLE=preflight 临时关闭）=====
+    from ugc_file_tools.writeback_preflight import (
+        read_section10_field7_from_gil,
+        run_writeback_preflight_or_raise,
+    )
+
+    run_writeback_preflight_or_raise(
+        payload_root=base_payload_root,
+        base_section10_field7=read_section10_field7_from_gil(Path(input_gil_file_path)),
+        context=f"signal_writeback -> {Path(output_gil_file_path).name}",
+    )
+
     # ===== 写盘：wire-level 仅替换必要段（field10=NodeGraphs/Signals），避免整份 payload 重编码漂移 =====
     section10_obj = base_payload_root.get("10")
     if not isinstance(section10_obj, dict):

@@ -54,6 +54,7 @@
   - 复合节点实例（host graph 的 composite node）端口类型会强制对齐到复合节点接口 virtual pins 的 `pin_type`，并写入到 GraphModel 的 `input_port_types/output_port_types`，避免端口名退化为“列表/字典”时写回沿用模板默认值导致“列表全变整数列表、字典全变泛型”。
     - 当复合节点实例的 `inputs/outputs` ports 列表被上游标准化阶段清空时，会基于 virtual pins 的顺序与名称补齐 ports 列表；若 ports 非空但长度不匹配则直接 fail-fast。
 - 诊断/二分：环境变量 `UGC_WB_DISABLE="flag1,flag2"`（含 `all`）用于禁用部分补丁点以做二分定位。
+- 落盘前硬校验：`pipeline_parts/pipeline_wire_write.py` 在编码写盘前调用 `ugc_file_tools/writeback_preflight.py`，校验 `section10['7']` 与 base 一致、graph_id 唯一、客户端信号索引唯一、无通用 300005 节点、同槽不重复挂载；不满足直接拒绝写盘（`UGC_WB_DISABLE=preflight` 可临时关闭）。
 - UI 源码占位符变量同步：当项目存档存在 `管理配置/关卡变量/自定义变量注册表.py` 时，UI 写回阶段会按注册表声明为单一真源补齐 UI 引用到的变量（不覆盖已存在同名变量值；类型不匹配会在报告中列出）；未启用注册表的存档则保持旧行为：按 UI 默认值/占位符推断并创建字符串/字典变量。
   - 同时提供按“已选 HTML 文件集”扫描的入口（用于导出中心 UI 勾选联动）：`scan_ui_html_files_for_placeholder_variable_refs_and_defaults`。
 - after_game 对齐补丁：可选裁剪少量“真源 after_game 导出会消失”的冗余 data edges（例如 `数据类型转换.输出 -> 对字典设置或新增键值对.值`）；写回侧会先检查目标端口是否仍有其它 data 入边，仅在不改变语义的前提下裁剪，避免端口类型推断证据丢失导致类型回退。
